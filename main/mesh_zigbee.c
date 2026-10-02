@@ -5,6 +5,7 @@
 
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
@@ -33,6 +34,7 @@ typedef struct __attribute__((packed))
 
 static QueueHandle_t s_mesh_rx_queue = NULL;
 static QueueHandle_t s_mesh_tx_queue = NULL;
+static SemaphoreHandle_t s_aps_tx_sem = NULL;
 static bool s_joined = false;
 static int16_t s_last_rx_lqi = 0;
 
@@ -66,7 +68,10 @@ esp_err_t mesh_zigbee_init(void)
     if (!s_mesh_tx_queue) {
         s_mesh_tx_queue = xQueueCreate(MESH_TX_QUEUE_LEN, sizeof(mesh_msg_t));
     }
-    ESP_RETURN_ON_FALSE(s_mesh_rx_queue && s_mesh_tx_queue, ESP_FAIL, TAG, "Failed to create mesh queues");
+    if (!s_aps_tx_sem) {
+        s_aps_tx_sem = xSemaphoreCreateBinary();
+    }
+    ESP_RETURN_ON_FALSE(s_mesh_rx_queue && s_mesh_tx_queue && s_aps_tx_sem, ESP_FAIL, TAG, "Failed to create mesh queues/semaphores");
 
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -199,6 +204,9 @@ static void zb_apsde_data_confirm_handler(esp_zb_apsde_data_confirm_t confirm)
     } else {
         ESP_LOGE(TAG, "APS TX FAIL status=%d", confirm.status);
     }
+    if (s_aps_tx_sem) {
+        xSemaphoreGive(s_aps_tx_sem);
+    }
 }
 
 static bool zb_apsde_data_indication_handler(esp_zb_apsde_data_ind_t ind)
@@ -259,16 +267,30 @@ static void mesh_tx_task(void *arg)
 
     while (1) {
         if (xQueueReceive(s_mesh_tx_queue, &msg, portMAX_DELAY) == pdTRUE) {
+            // Drain any leftover semaphore token before transmitting
+            if (s_aps_tx_sem) {
+                xSemaphoreTake(s_aps_tx_sem, 0);
+            }
+
+            bool sent = false;
             if (msg.text[0] != '\0') {
                 send_aps_string_to_coordinator(msg.text);
+                sent = true;
             } else if (msg.cmd[0] != '\0') {
                 send_aps_command_to_coordinator(msg.cmd, msg.value);
+                sent = true;
             } else {
                 ESP_LOGW(TAG, "Dropping TX with empty cmd/text");
             }
 
-            // Allow the 802.15.4 radio time to complete APS transmission and receive MAC/APS ACK
-            vTaskDelay(pdMS_TO_TICKS(150));
+            if (sent && s_aps_tx_sem) {
+                // Wait for radio stack to confirm transmission (with 500ms safety timeout)
+                if (xSemaphoreTake(s_aps_tx_sem, pdMS_TO_TICKS(500)) != pdTRUE) {
+                    ESP_LOGW(TAG, "APS TX confirm timeout (500ms)");
+                }
+                // Small 15ms guard band to let radio buffers settle between burst packets
+                vTaskDelay(pdMS_TO_TICKS(15));
+            }
         }
     }
 }
