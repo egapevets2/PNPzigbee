@@ -58,7 +58,7 @@ static void serial_bridge_rx_task(void *arg)
 
     while (1) {
         uint8_t ch = 0;
-        int n = uart_read_bytes(SERIAL_BRIDGE_UART_NUM, &ch, 1, pdMS_TO_TICKS(20));
+        int n = uart_read_bytes(SERIAL_BRIDGE_UART_NUM, &ch, 1, portMAX_DELAY);
 
         if (n != 1) {
             continue;

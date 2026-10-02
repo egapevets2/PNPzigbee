@@ -22,11 +22,8 @@ static void throttle_task(void *arg)
         // Block indefinitely until a message is placed in the queue
         if (xQueueReceive(s_msg_queue, msg_buf, portMAX_DELAY) == pdTRUE)
         {
-            // Send it to the coordinator
+            // Send it to the coordinator (mesh_tx_task handles ACK-driven pacing)
             mesh_zigbee_send_text(msg_buf);
-
-            // Wait 200ms before allowing the next message to process (throttling)
-            vTaskDelay(pdMS_TO_TICKS(200));
         }
     }
 }
