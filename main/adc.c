@@ -22,9 +22,9 @@ typedef struct {
 } adc_config_t;
 
 static adc_config_t g_adc[3] = {
-    { .active = false, .iGPIO = 2,  .LowerThresh = 111, .UpperThresh = 334, .Comparator = false, .name = "A0" },
-    { .active = false, .iGPIO = 3,  .LowerThresh = 111, .UpperThresh = 334, .Comparator = false, .name = "A1" },
-    { .active = false, .iGPIO = 10, .LowerThresh = 111, .UpperThresh = 334, .Comparator = false, .name = "A2" }
+    { .active = false, .iGPIO = 0,  .LowerThresh = 111, .UpperThresh = 334, .Comparator = false, .name = "A0" },
+    { .active = false, .iGPIO = 1,  .LowerThresh = 111, .UpperThresh = 334, .Comparator = false, .name = "A1" },
+    { .active = false, .iGPIO = 2,  .LowerThresh = 111, .UpperThresh = 334, .Comparator = false, .name = "A2" }
 };
 
 static adc_oneshot_unit_handle_t adc1_handle = NULL;
@@ -38,10 +38,10 @@ static adc_channel_t get_adc_channel(int gpio) {
         case 1:  return ADC_CHANNEL_1;
         case 2:  return ADC_CHANNEL_2;
         case 3:  return ADC_CHANNEL_3;
-        case 14: return ADC_CHANNEL_4;
-        case 15: return ADC_CHANNEL_5;
-        case 10: return ADC_CHANNEL_6;
-        default: return ADC_CHANNEL_3;
+        case 4:  return ADC_CHANNEL_4;
+        case 5:  return ADC_CHANNEL_5;
+        case 6:  return ADC_CHANNEL_6;
+        default: return ADC_CHANNEL_1;
     }
 }
 
@@ -106,7 +106,9 @@ void ADC_Setup(int idx) {
 }
 
 int ADC_GetCurrentValue(int idx) {
-    if (!g_adc[idx].active) return 0;
+    if (!g_adc[idx].active) {
+        ADC_Setup(idx);
+    }
     int val = 0;
     adc_oneshot_read(adc1_handle, get_adc_channel(g_adc[idx].iGPIO), &val);
     return val;
