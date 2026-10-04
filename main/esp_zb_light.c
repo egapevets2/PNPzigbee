@@ -11,6 +11,7 @@
 #include "driver/gpio.h"
 
 #include "light_driver.h"
+#include "esp_zb_light.h"
 #include "pwm_driver.h"
 #include "mesh_serial.h"
 #include "mesh_zigbee.h"
@@ -250,6 +251,8 @@ static void app_msg_task(void *arg)
 
 void app_main(void)
 {
+    ESP_LOGI(TAG, "=== PNPzigbee v1.3 build %s %s ===", __DATE__, __TIME__);
+    ESP_LOGI(TAG, "Channel mask: 0x%08lx", (uint32_t)ESP_ZB_PRIMARY_CHANNEL_MASK);
     ledc_manager_init();
 
     light_driver_init(LIGHT_DEFAULT_OFF);
