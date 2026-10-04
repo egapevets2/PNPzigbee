@@ -37,6 +37,7 @@ static QueueHandle_t s_mesh_tx_queue = NULL;
 static SemaphoreHandle_t s_aps_tx_sem = NULL;
 static bool s_joined = false;
 static int16_t s_last_rx_lqi = 0;
+static uint8_t s_steering_retry_count = 0;
 
 static void esp_zb_task(void *pvParameters);
 static void mesh_tx_task(void *arg);
@@ -325,9 +326,12 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             } else {
                 ESP_LOGI(TAG, "Rejoined network from stored state");
                 s_joined = true;
+                s_steering_retry_count = 0;
             }
         } else {
-            ESP_LOGW(TAG, "Failed to initialize Zigbee stack (status: %s)", esp_err_to_name(err_status));
+            ESP_LOGW(TAG, "Failed to initialize Zigbee stack (status: %s), falling back to network steering", esp_err_to_name(err_status));
+            esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb,
+                                   ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
         }
         break;
 
@@ -340,11 +344,18 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                      extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0],
                      esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
             s_joined = true;
+            s_steering_retry_count = 0;
         } else {
             ESP_LOGI(TAG, "Network steering was not successful (status: %s)", esp_err_to_name(err_status));
             s_joined = false;
-            esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb,
-                                   ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
+            s_steering_retry_count++;
+            if (!esp_zb_bdb_is_factory_new() && s_steering_retry_count >= 10) {
+                ESP_LOGW(TAG, "Rejoin failed %d times with stored credentials; performing factory reset to join fresh", s_steering_retry_count);
+                esp_zb_factory_reset();
+            } else {
+                esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb,
+                                       ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
+            }
         }
         break;
 
