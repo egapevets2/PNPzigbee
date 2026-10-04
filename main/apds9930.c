@@ -200,7 +200,8 @@ void proximity_task(void *arg)
 bool proximity_is_cmd(const char *cmd) {
     if (!cmd) return false;
     return (strcmp(cmd, "StreamProx") == 0 || strcmp(cmd, "Npulses") == 0 || strcmp(cmd, "UpperThresh") == 0 || 
-            strcmp(cmd, "LowerThresh") == 0 || strcmp(cmd, "SetupProximity") == 0);
+            strcmp(cmd, "LowerThresh") == 0 || strcmp(cmd, "SetupProximity") == 0 ||
+            strcmp(cmd, "ReadProximity") == 0 || strcmp(cmd, "ReadProx") == 0);
 }
 
 bool proximity_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool text_message) {
@@ -208,32 +209,49 @@ bool proximity_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool 
         g_stream_prox = (value != 0);
         char resp[32];
         snprintf(resp, sizeof(resp), "PROX STREAM %s", g_stream_prox ? "ON" : "OFF");
-        if (!text_message) mesh_zigbee_send_text(resp);
+        mesh_zigbee_send_text(resp);
         return true;
     } else if (strcmp(cmd, "Npulses") == 0) {
         Npulses = value;
         ESP_LOGI(TAG, "Npulses set to %d. Reconfiguring sensor...", Npulses);
         apds9930_config();
-        if (!text_message) mesh_zigbee_send_text("GOT NPULSES OK");
+        mesh_zigbee_send_text("GOT NPULSES OK");
         return true;
     } else if (strcmp(cmd, "UpperThresh") == 0) {
         UpperThresh = value;
         ESP_LOGI(TAG, "UpperThresh set to %d", UpperThresh);
-        if (!text_message) mesh_zigbee_send_text("GOT UPPERTHRESH OK");
+        mesh_zigbee_send_text("GOT UPPERTHRESH OK");
         return true;
     } else if (strcmp(cmd, "LowerThresh") == 0) {
         LowerThresh = value;
         ESP_LOGI(TAG, "LowerThresh set to %d", LowerThresh);
-        if (!text_message) mesh_zigbee_send_text("GOT LOWERTHRESH OK");
+        mesh_zigbee_send_text("GOT LOWERTHRESH OK");
+        return true;
+    } else if (strcmp(cmd, "ReadProximity") == 0 || strcmp(cmd, "ReadProx") == 0) {
+        if (dev_handle == NULL) {
+            apds9930_init();
+        }
+        uint16_t prox = 0;
+        char resp[32];
+        if (apds9930_read_proximity(&prox) == ESP_OK) {
+            snprintf(resp, sizeof(resp), "PROXval %u", prox);
+        } else {
+            snprintf(resp, sizeof(resp), "PROXval ERROR");
+        }
+        mesh_zigbee_send_text(resp);
         return true;
     } else if (strcmp(cmd, "SetupProximity") == 0) {
         if (apds9930_init() == ESP_OK) {
-            xTaskCreate(proximity_task, "prox_task", 3072, NULL, 5, NULL);
-            ESP_LOGI(TAG, "Proximity task started successfully.");
-            if (!text_message) mesh_zigbee_send_text("SETUP PROX OK");
+            static bool s_task_created = false;
+            if (!s_task_created) {
+                xTaskCreate(proximity_task, "prox_task", 3072, NULL, 5, NULL);
+                s_task_created = true;
+                ESP_LOGI(TAG, "Proximity task started successfully.");
+            }
+            mesh_zigbee_send_text("SETUP PROX OK");
         } else {
             ESP_LOGE(TAG, "APDS9930 initialization failed.");
-            if (!text_message) mesh_zigbee_send_text("SETUP PROX FAIL");
+            mesh_zigbee_send_text("SETUP PROX FAIL");
         }
         return true;
     }
