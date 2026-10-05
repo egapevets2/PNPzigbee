@@ -5,10 +5,11 @@ set(COMPONENTS
     main 
     driver 
     nvs_flash 
-    esp_zigbee_lib 
-    zcl_responses
     esp_driver_ledc
     esp_driver_i2c
+    esp_wifi
+    esp_event
+    esp_netif
 )
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)

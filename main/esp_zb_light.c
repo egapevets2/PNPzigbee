@@ -105,7 +105,10 @@ static void serial_console_task(void *arg)
     while (1)
     {
         int ch = mesh_serial_read_byte();
-        if (ch < 0) continue;
+        if (ch < 0) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
 
         if (ch == '\r' || ch == '\n') {
             if (pos == 0) continue;
@@ -196,9 +199,9 @@ static void app_msg_task(void *arg)
                     continue;
                 }
 
-                // If the command is ping or setDAC, the downstream Arduino will generate the response!
-                // Do NOT send an ACK here so it doesn't conflict or duplicate the Arduino's reply.
-                if (strcasecmp(msg.cmd, "ping") != 0 && strcasecmp(msg.cmd, "pingx") != 0 && strcasecmp(msg.cmd, "setDAC") != 0) {
+                // If the command is ping, setDAC, or SetupSerialBridge, the dedicated response is sent separately!
+                // Do NOT send an ACK here so it doesn't conflict or duplicate the reply.
+                if (strcasecmp(msg.cmd, "ping") != 0 && strcasecmp(msg.cmd, "pingx") != 0 && strcasecmp(msg.cmd, "setDAC") != 0 && strcasecmp(msg.cmd, "SetupSerialBridge") != 0) {
                     if (strcmp(msg.text, "ACK") != 0 && msg.source[0] != '\0') {
                         mesh_zigbee_send_text("ACK");
                     }

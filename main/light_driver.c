@@ -12,7 +12,8 @@
 
 void Onboard_LED_control(bool power)
 {
-    gpio_set_level(LED_GPIO, power ? 1 : 0);
+    // Seeed Studio XIAO ESP32-C6 onboard LED on GPIO 15 is Active LOW (0 = ON, 1 = OFF)
+    gpio_set_level(LED_GPIO, power ? 0 : 1);
 }
 
 void light_driver_init(bool initial_state)
@@ -27,14 +28,6 @@ void light_driver_init(bool initial_state)
 
     gpio_config(&io_conf);
 
-    // TEMP TEST
-    for (int i = 0; i < 5; i++)
-    {
-        gpio_set_level(LED_GPIO, 0);
-        vTaskDelay(pdMS_TO_TICKS(200));
-        gpio_set_level(LED_GPIO, 1);
-        vTaskDelay(pdMS_TO_TICKS(200));
-    }
 
     gpio_set_level(LED_GPIO, initial_state ? 0 : 1);
 }

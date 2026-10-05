@@ -31,7 +31,7 @@ typedef struct {
 // Timer and Channel numbers are left uninitialized because the manager provides them
 static pwm_channel_state_t pwm_states[NUM_PWM_CHANNELS] = {
     { .active = false, .current_gpio = GPIO_NUM_2, .current_freq = 50, .pwm_slew_rate = 0, .target_pwm = 77, .current_pwm = 77.0f },
-    { .active = false, .current_gpio = GPIO_NUM_3, .current_freq = 50, .pwm_slew_rate = 0, .target_pwm = 0,  .current_pwm = 0.0f  },
+    { .active = false, .current_gpio = GPIO_NUM_21, .current_freq = 50, .pwm_slew_rate = 0, .target_pwm = 0,  .current_pwm = 0.0f  },
     { .active = false, .current_gpio = GPIO_NUM_4, .current_freq = 50, .pwm_slew_rate = 0, .target_pwm = 0,  .current_pwm = 0.0f  },
     { .active = false, .current_gpio = GPIO_NUM_5, .current_freq = 50, .pwm_slew_rate = 0, .target_pwm = 0,  .current_pwm = 0.0f  }
 };
