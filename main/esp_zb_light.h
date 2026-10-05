@@ -16,8 +16,6 @@
 #include <stdbool.h>
 #include "light_driver.h"
 
-/* Radio configuration */
-#define ESP_ZB_PRIMARY_CHANNEL_MASK     1
 
 /* Basic manufacturer information */
 #define ESP_MANUFACTURER_NAME "\x09""ESPRESSIF"      /* Customized manufacturer name */

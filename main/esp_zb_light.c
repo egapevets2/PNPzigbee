@@ -254,8 +254,7 @@ static void app_msg_task(void *arg)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "=== PNPzigbee v1.3 build %s %s ===", __DATE__, __TIME__);
-    ESP_LOGI(TAG, "Channel mask: 0x%08lx", (uint32_t)ESP_ZB_PRIMARY_CHANNEL_MASK);
+    ESP_LOGI(TAG, "=== PNPzigbee ESP-NOW node build %s %s ===", __DATE__, __TIME__);
     ledc_manager_init();
 
     light_driver_init(LIGHT_DEFAULT_OFF);
