@@ -411,6 +411,15 @@ When the Zigbee coordinator sends a text command targeted at the node, the ESP32
   * The Coordinator outputs `< <TargetName>: GotDAC <Value>`.
 * **HIL ADC Testing Application:** By wiring Trinket M0 pin **`A0`** to an ESP32-C6 ADC input (e.g., `GPIO2 / A0`), the host test suite can command arbitrary reference voltages, read back the ADC measurement via Zigbee (`ReadADCA0`), and automatically verify the ADC calibration of the ESP32-C6 over the air.
 
+#### 4. Digital Output Pin Control (`setx` / `clrx`)
+* **Inbound Command:** `<TargetName> setx` (set D0 HIGH) / `<TargetName> clrx` (clear D0 LOW).
+* **Hardware Output:** Drives digital pin **`D0`** on the SAMD21 (ItsyBitsy M0 / Trinket M0) to logic HIGH (3.3V) with `setx`, or logic LOW (0.0V) with `clrx`.
+* **Execution & Response:**
+  * Arduino sets/clears pin `D0`.
+  * Transmits `GotSetx\r\n` or `GotClrx\r\n` back across `Serial1` to the ESP32-C6.
+  * The Coordinator outputs `< <TargetName>: GotSetx` or `< <TargetName>: GotClrx`.
+* **HIL Digital Input Testing Application:** By wiring Arduino pin **`D0`** to an ESP32-C6 GPIO input pin configured for state change detection (`ModeGPIOin`), the host test suite can command arbitrary digital state toggles over the air and verify that the ESP32-C6 detects the edge transition and fires the expected asynchronous upstream Zigbee event (`GPIO <pin> CHANGED TO <0|1>`).
+
 ---
 
 ### 9.5 Visual Status Indicators
@@ -427,4 +436,288 @@ When the Zigbee coordinator sends a text command targeted at the node, the ESP32
 * **Color:** **Vibrant Blue** (`0x0000FF`) at 40/255 brightness.
 * **Cadence:** 200 ms ON / 200 ms OFF per pulse.
 * **Non-Blocking Operation:** `serviceBlinkx()` runs strictly on `millis()` timestamps, ensuring serial bridge throughput is never delayed or interrupted during long multi-blink sequences.
+
+---
+
+## 10. Comprehensive RF Diagnostics & Findings
+
+This section documents the Hardware-in-the-Loop (HIL) RF troubleshooting methodology and test procedure developed to diagnose wireless communication failures, silent nodes, and layer-2 802.11 ACK timeouts on ESP32-C6 devices (specifically the Seeed Studio XIAO ESP32-C6).
+
+### 10.1 Layer-2 802.11 ACK Protocol Mechanics
+In the ESP-NOW communication protocol:
+* **Unicast Transmissions:** When a frame is dispatched to a specific unicast MAC address, the receiving device's Wi-Fi hardware PHY/MAC in silicon must automatically generate and transmit an IEEE 802.11 ACK frame within SIFS (Short Interframe Space, ~10–16 $\mu\text{s}$). The firmware application layer does not participate in ACK generation.
+* **Failure Symptom:** If the transmitting device does not detect the layer-2 ACK within its hardware retry timeout (~50–60 ms), the transmit callback reports:
+  ```text
+  I (...) COORDINATOR_ESPNOW: esp_now_send returned ESP_OK (0)
+  I (...) COORDINATOR_ESPNOW: ESP-NOW TX cb: status=1 (FAIL)
+  ```
+* **Failure Scope:** A `status=1 (FAIL)` callback indicates that either:
+  1. The destination device never received the frame (RF path open, antenna defective, or channel mismatch).
+  2. The destination device received the frame and transmitted an ACK, but the sender failed to detect the ACK.
+  3. The receiver's silicon Station MAC does not match the frame's destination address.
+
+---
+
+### 10.2 Diagnostic Tooling & Interactive CLI Commands
+The firmware integrates real-time serial console diagnostic commands accessible via the USB-Serial/JTAG interface (115200 baud):
+
+| Command | Parameters | Description | Example Output |
+| :--- | :--- | :--- | :--- |
+| **`rf <pwr> <sel>`** | `pwr`: 0=ON, 1=OFF<br>`sel`: 0=Ceramic, 1=U.FL | Controls the Seeed Studio XIAO ESP32-C6 **FM8625H RF multiplexer switch** GPIO pins. | `RF pins set: PWR=0, SEL=0` |
+| **`sniff <0\|1>`** | `0`: Disable<br>`1`: Enable | Toggles Wi-Fi **promiscuous mode** sniffer. Disables MAC address filtering and prints RSSI / length of every 2.4 GHz packet received. | `[SNIFF] PKT len=128 rssi=-64` |
+| **`scan`** | *none* | Performs an active Wi-Fi spectrum scan across all 2.4 GHz channels (1–11) and lists detected SSIDs, RSSI, and channels. | `Found 4 APs`<br>`SSID: Verizon_T3GC73, RSSI: -80, Chan: 6` |
+| **`bcast <text>`** | `text` string | Sends an unacknowledged ESP-NOW broadcast frame to `FF:FF:FF:FF:FF:FF`. | `broadcast queued` |
+
+---
+
+### 10.3 Four-Step RF Diagnostic Procedure
+
+When a node exhibits persistent `status=1 (FAIL)` transmission errors or fails to acknowledge coordinator discovery sweeps, execute the following four-step diagnostic procedure:
+
+#### Step 1: Radio & PHY Boot Calibration Verification
+Verify that the device boots cleanly and reads valid radio calibration parameters:
+1. Confirm station MAC address:
+   ```text
+   I (...) wifi:mode : sta (b4:3a:45:8a:c7:c0)
+   ```
+2. Verify primary Wi-Fi channel and maximum transmitter power:
+   ```text
+   I (...) MESH_ESPNOW: Wi-Fi Config: Actual Channel=1 (second=0), Max TX Power=80 (0.25dBm units)
+   ```
+   *(Power value 80 corresponds to maximum +20.0 dBm output).*
+3. Confirm initial RF switch pin state readback:
+   ```text
+   I (...) MESH_ESPNOW: RF Switch pins: PWR(GPIO3)=0, SEL(GPIO14)=0
+   ```
+
+#### Step 2: 4-State RF Switch Sweep
+The Seeed Studio XIAO ESP32-C6 routes RF through an FM8625H switch controlled by:
+* **`GPIO 3` (PWR):** Active-LOW enable (driving `0` powers ON the switch; driving `1` isolates the switch).
+* **`GPIO 14` (SEL):** Antenna path multiplexer (`0` routes to onboard ceramic antenna; `1` routes to gold U.FL connector).
+
+Iterate through all four binary states while testing bidirectional transmissions:
+```text
+rf 0 0    # State 1: Power ON, Onboard Ceramic Antenna
+rf 0 1    # State 2: Power ON, External U.FL Connector
+rf 1 0    # State 3: Power OFF, High-impedance isolation
+rf 1 1    # State 4: Power OFF, High-impedance isolation
+```
+In each state:
+- Send `<TargetName> ping` from the Coordinator and observe if `status=0 (SUCCESS)` is returned.
+- Send test text from the node to the Coordinator and inspect coordinator reception.
+
+#### Step 3: Raw 802.11 Promiscuous Sniffer Test
+Eliminate software MAC filtering, queueing, and target parsing from the diagnostic path:
+1. Enable promiscuous mode on the test node:
+   ```text
+   sniff 1
+   ```
+2. Generate active 2.4 GHz RF traffic nearby (e.g., send `Kitchen ping` from the Coordinator to a known healthy node).
+3. **Evaluation Criteria:**
+   * **Passing:** The terminal outputs continuous `[SNIFF] PKT len=... rssi=...` lines for ambient beacons and inter-node frames.
+   * **Failing:** Zero packets captured. Proves the silicon PHY is receiving no radio frequency energy at its antenna pin.
+
+#### Step 4: Full 2.4 GHz Spectrum Scan (Differential Baseline)
+Run an active channel scan to benchmark receiver sensitivity against known ambient access points:
+```text
+scan
+```
+Perform a differential comparison against a known functioning node in the same physical space:
+* **Healthy Reference Node (Kitchen):**
+  ```text
+  Scanning Wi-Fi...
+  Found 4 APs
+    SSID: Verizon_T3GC73, RSSI: -80, Chan: 6
+    SSID: NETGEAR81, RSSI: -88, Chan: 3
+    SSID: Route83, RSSI: -95, Chan: 7
+    SSID: Route83-Guest, RSSI: -95, Chan: 7
+  ```
+* **Defective / Blind Node (Garage):**
+  ```text
+  Scanning Wi-Fi...
+  Found 0 APs
+  ```
+
+---
+
+### 10.4 Diagnostic Decision Matrix & Hardware Root Causes
+
+When a node reports **Found 0 APs** across all 11 channels and captures **0 packets** in promiscuous mode across all four RF switch states, software configuration has been 100% ruled out. The failure is localized to physical hardware:
+
+```mermaid
+flowchart TD
+    START["Node Fails ESP-NOW Ping (status=1 FAIL)"] --> STEP1["Run 'scan' on Node"]
+    STEP1 --> SCAN_OK{"APs Found > 0?"}
+    SCAN_OK -- Yes --> CHANNEL_CHECK["Check Channel Mismatch & MAC Registration"]
+    SCAN_OK -- No --> STEP2["Run 4-State 'rf <pwr> <sel>' Sweep"]
+    STEP2 --> SWEEP_OK{"Any State Finds APs?"}
+    SWEEP_OK -- Yes (SEL=1) --> EXT_ANT["Board requires External U.FL Antenna (Set GPIO14=1)"]
+    SWEEP_OK -- No --> SNIFF_TEST["Run 'sniff 1' with Nearby Traffic"]
+    SNIFF_TEST --> SNIFF_OK{"Packets Captured?"}
+    SNIFF_OK -- No --> HW_FAILURE["Physical RF Front-End Failure"]
+    
+    HW_FAILURE --> CAUSE1["1. Fractured Ceramic Antenna Element"]
+    HW_FAILURE --> CAUSE2["2. Broken / Lifted 0201 Matching Inductor / Capacitor"]
+    HW_FAILURE --> CAUSE3["3. Blown FM8625H RF Switch IC or Solder Bridge"]
+    HW_FAILURE --> CAUSE4["4. Cold Solder Joint on ESP32-C6 Pin 2 (LNA_IN / RF)"]
+    
+    HW_FAILURE --> REMEDY["Remediation: Connect External U.FL Rod Antenna and set GPIO14=1"]
+```
+
+#### Physical Failure Modes:
+1. **Ceramic Element Fracture:** The onboard chip antenna is brittle; mechanical shock or drop can crack the internal metallization.
+2. **Matching Network Damage:** The RF trace between ESP32-C6 pin 2 (`LNA_IN`) and the RF switch utilizes 0201 passives. A dislodged inductor or capacitor creates an open circuit.
+3. **FM8625H Switch Failure:** Overvoltage or ESD discharge can damage the internal FET switches, presenting high insertion loss (>30 dB) to both antenna paths.
+4. **Remediation Attempt:** Connect a standard 2.4 GHz dipole whip/rod antenna to the onboard gold U.FL receptacle and set `rf 0 1` (`GPIO 3 = 0`, `GPIO 14 = 1`) to bypass a defective ceramic antenna path.
+
+---
+
+## 11. Antenna Verification, Transmitter Placement & Field Survey Protocol
+
+### 11.1 Hardware Antenna Architecture & Pin Mapping
+
+Both the **Coordinator** and **End Nodes** utilize the Seeed Studio XIAO ESP32-C6 platform, which integrates an on-board **FM8625H** single-pole double-throw (SPDT) solid-state RF switch. This switch selects between the onboard ceramic chip antenna and the external gold U.FL connector:
+
+| Control Line | ESP32-C6 GPIO | Logic Level | Hardware Behavior |
+| :--- | :--- | :--- | :--- |
+| **RF Switch Power Enable** | `GPIO 3` | `0` (LOW) | **Active-LOW Power ON:** Enables internal FET switch biasing |
+| | | `1` (HIGH) | **Power OFF / High-Z:** Disables RF switch (isolation state) |
+| **Antenna Path Select** | `GPIO 14` | `0` (LOW) | **Onboard Ceramic Antenna:** Connects 2.4 GHz RF trace to ceramic chip |
+| | | `1` (HIGH) | **External U.FL Connector:** Connects 2.4 GHz RF trace to gold IPEX socket |
+
+> [!IMPORTANT]
+> Both the Coordinator firmware (`esp_zb_switch.c`) and Node firmware (`mesh_zigbee.c`) must explicitly configure `GPIO 3 = 0` and `GPIO 14 = 0` during the boot sequence and re-assert the levels immediately after `esp_wifi_start()`.
+
+---
+
+### 11.2 Measured Physical Performance & Antenna Impact
+
+Direct benchmark measurements conducted between Coordinator and End Nodes verified the exact link gain of the onboard ceramic antenna:
+
+| Configuration | RF Command | Wi-Fi Scan (2.4 GHz) | Received RSSI | LQI (0–255) | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Ceramic Antenna Active** | `rf 0 0` | **4 to 5 APs detected** | **-64 to -65 dBm** | **207 to 218** | **OK (Optimal)** |
+| **Ceramic Disconnected** *(Empty U.FL)* | `rf 0 1` | **0 APs detected (Deaf)** | **-88 dBm** | **Marginal / Lost** | **-23 dB Attenuation** |
+| **Ceramic Restored** | `rf 0 0` | **4 to 5 APs detected** | **-64 to -65 dBm** | **207 to 218** | **+23 dB Recovery** |
+
+* **Quantitative Gain:** Activating the ceramic antenna yields a **+23 dB improvement in received signal strength**, which represents a **200× increase in RF signal power**.
+* **Failure Symptom:** When the RF switch is toggled to an empty U.FL socket, the board operates strictly via weak parasitic trace radiation (-88 dBm), resulting in severe packet loss at range.
+
+---
+
+### 11.3 Cable, Power Supply & Environmental Noise Diagnostics
+
+During field deployment, environmental RF interference or noisy power supplies can severely desensitize the receiver. Always inspect the ESP-IDF Wi-Fi Automatic Gain Control (AGC) calibration line in the boot log:
+
+```text
+W (330) wifi:(agc)0x600a7128:0xd2087800, min.avgNF:0xce->0xd2(dB), RCalCount:0x86, min.RRssi:0x800(-128.00)
+```
+
+#### Diagnostic Indicators:
+* **Clean, Healthy Environment (`min.RRssi: -99 dBm` to `-128 dBm`):**
+  * The noise floor is low and normal.
+  * Receiver operates at peak sensitivity.
+  * ROM boot code displays `boot:0x1e` (standard SPI flash boot).
+* **High-Noise / Desensitized Environment (`min.RRssi: -62 dBm`):**
+  * The receiver is blinded by **37 dB of broadband interference** (>5,000× noise power).
+  * Causes: Unshielded USB cables, noisy buck/boost regulators, USB ground loops, or floating strapping pins forcing `boot:0x3f`.
+  * Symptoms: `scan` reports `Found 0 APs`, and `esp_now_send` returns `status=1 (FAIL)`.
+  * **Solution:** Swap the USB cable, eliminate power supply ripple, and ensure GPIO strapping pins are not pulled high at reset.
+
+---
+
+### 11.4 Transmitter & Antenna Placement Field Survey Procedure
+
+Use this standard test sequence whenever positioning transmitters, evaluating enclosure materials, or testing new physical locations:
+
+```mermaid
+flowchart TD
+    STEP1["1. Local Spectrum Scan ('scan')"] --> STEP2["2. Antenna Configuration ('rf 0 0')"]
+    STEP2 --> STEP3["3. Point-to-Point Ping ('<Target> ping')"]
+    STEP3 --> STEP4["4. Evaluate LQI & Remote LQI"]
+    STEP4 --> DECISION{"LQI >= 100 on both sides?"}
+    DECISION -- Yes --> PASS["Placement Verified (RF Status: OK)"]
+    DECISION -- No (LQI < 100) --> REORIENT["Reorient Board / Increase Clearance"]
+    REORIENT --> STEP3
+    DECISION -- No (LQI < 50 or Lost) --> EXT_ANT["Switch to External U.FL Antenna ('rf 0 1')"]
+    EXT_ANT --> STEP3
+```
+
+#### Step 1: Baseline Ambient Scan (`scan`)
+Verify that the node's receiver is active and catalog the ambient 2.4 GHz environment:
+```text
+scan
+```
+* **Expected Output:**
+  ```text
+  Scanning Wi-Fi...
+  Found 5 APs
+    SSID: Verizon_T3GC73, RSSI: -89, Chan: 6
+    SSID: NETGEAR81,      RSSI: -94, Chan: 3
+    SSID: Route83,        RSSI: -92, Chan: 7
+  ```
+* If `Found 0 APs` is returned, stop and resolve local hardware/power noise before proceeding.
+
+#### Step 2: Confirm Antenna State
+Ensure the node is actively set to the desired antenna path:
+* **For Onboard Ceramic Antenna:**
+  ```text
+  rf 0 0
+  ```
+* **For External U.FL Whip/Rod Antenna:**
+  ```text
+  rf 0 1
+  ```
+
+#### Step 3: Point-to-Point Ping & LQI Verification
+From the Coordinator terminal, ping the target node at its test location:
+```text
+coordinator> Garage ping
+```
+* **Observe Immediate Bidirectional LQI:**
+  ```text
+  I (783) COORDINATOR_ESPNOW: Device Garage ONLINE (LQI=207)
+  < Garage: [PONG LQI=207 REMOTE_LQI=218]
+  ```
+  * `LQI=207`: Signal quality of the Node received at the **Coordinator**.
+  * `REMOTE_LQI=218`: Signal quality of the Coordinator received at the **Node**.
+
+#### Step 4: Full Network Survey Report (`GiveNetworkReport`)
+Generate an official link status report across all deployed devices:
+```text
+coordinator> GiveNetworkReport
+```
+```text
+*********************NETWORK_REPORT_BEGIN
+
+NAME,IEEE,SHORT,ONLINE,TYPE,LQI,REMOTE_LQI,RF_STATUS,AGE,ROUTE
+Kitchen,0xB43A45FFFE8AC640,0x0001,1,END_DEVICE,210,214,OK,1,YES
+Garage,0xB43A45FFFE8AC7C0,0x0002,1,END_DEVICE,207,218,OK,1,YES
+Santafe,0x58E6C5FFFE1AE8A0,0x0003,0,UNKNOWN,0,-,UNKNOWN,0,NO
+*********************NETWORK_REPORT_END
+```
+
+* **LQI Interpretation Scale:**
+  * **`100 – 255` (OK):** Excellent link margin. High reliability.
+  * **`50 – 99` (MARGINAL):** Borderline link. Packets will occasionally drop during movement or interference.
+  * **`0 – 49` (WEAK):** High packet loss. Relocate node or upgrade to external antenna.
+
+---
+
+### 11.5 Physical Installation & Clearances Guidelines
+
+When mounting the Seeed Studio XIAO ESP32-C6 in enclosures or on carrier boards:
+
+1. **Antenna Keep-Out Zone:**
+   * The ceramic chip antenna is located at the top edge of the board.
+   * Maintain a minimum of **15 mm of clearance** from metal brackets, copper pours, battery cells, and large electrolytic capacitors in front of and around the antenna.
+   * Never run copper traces or ground planes directly underneath the ceramic antenna element.
+2. **Enclosure Material:**
+   * Use non-conductive plastics (ABS, PLA, PETG, Polycarbonate).
+   * Avoid metallic enclosures, carbon-fiber cases, or ESD-shielded plastics unless an external U.FL dipole rod antenna is fed through a chassis bulkhead.
+3. **Board Orientation:**
+   * For maximum spherical coverage between floors or across multiple rooms, mount the board vertically rather than flat against a concrete/masonry wall.
+4. **External Antenna Upgrade:**
+   * If physical distance or wall thickness forces LQI below 100, connect a 2.4 GHz +3 dBi dipole rod antenna to the U.FL socket and issue `rf 0 1` (`GPIO 3 = 0, GPIO 14 = 1`).
+
 
