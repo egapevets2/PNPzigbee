@@ -572,6 +572,43 @@ flowchart TD
 
 ---
 
+### 10.5 Case Study & Definitive Resolution: The Cable Noise & Socket Swap Discovery
+
+During transition from Zigbee to ESP-NOW, an instructive anomaly occurred: **Kitchen** operated with strong signals (-52 dBm), while **Garage** and a replacement module (**SantaFe**) at a secondary test socket failed completely (`status=1 FAIL`, 0 APs detected). The systematic resolution of this issue established several key diagnostic principles:
+
+#### 1. Disproving the "Stale Zigbee NVRAM / EEPROM" Hypothesis
+* **Hypothesis:** Leftover Zigbee network keys, routing tables, or corrupted PHY calibration stored in NVS from earlier development might be conflicting with the ESP-NOW Wi-Fi PHY.
+* **Empirical Test A (Full Chip Erase):** Executed `esptool erase-flash` on the failing node, completely writing all 4MB of flash to `0xFF`. Flashed pristine bootloader, partition table, and firmware. Result: Node booted with clean NVS and default PHY calibration, but still detected 0 APs.
+* **Empirical Test B (NVS Cloning from Known-Good Node):** Extracted the exact, working 64KB NVS partition from the healthy Kitchen node and flashed it onto the failing node. Result: The node still detected 0 APs.
+* **Conclusion:** The issue was 100% independent of flash memory, NVS data, or software state.
+
+#### 2. Disproving Board-Level Hardware Failure
+* When the original Garage board was replaced with a brand-new, previously working module (SantaFe) in the *same secondary socket*, SantaFe immediately exhibited the exact same failure mode (`boot:0x3f`, `min.RRssi: -62.00 dBm`, 0 APs detected).
+* Two distinct, previously functional boards failing identically in the same socket indicated an environmental or interconnect issue rather than broken silicon.
+
+#### 3. Identifying the Root Cause: Cable Noise Injection & Strapping Forcing
+Comparison of low-level ROM boot registers and ESP-IDF AGC calibration logs revealed two critical indicators:
+
+| Diagnostic Metric | Healthy Socket (Kitchen) | Defective Secondary Socket | Impact |
+| :--- | :--- | :--- | :--- |
+| **ROM Strapping Register** | `boot:0x1e` | `boot:0x3f` | Floating/pulled strapping pins forced logic levels high |
+| **Wi-Fi AGC Noise Floor (`min.RRssi`)** | **`-128.00 dBm`** | **`-62.00 dBm`** | **+66 dB noise floor surge** (>4,000,000× noise power!) |
+| **Wi-Fi Spectrum Scan (`scan`)** | **4 to 5 APs detected** | **0 APs detected** | Broadband interference blinded the LNA receiver |
+
+* **The Mechanism:** An unshielded, repaired USB cable or ground-loop power supply at the secondary socket was injecting massive conducted high-frequency switching noise into the board ground and antenna ground plane. Because the noise floor was at **-62 dBm**, any incoming 2.4 GHz packets (which arrive at -75 to -95 dBm) were buried under the noise by over 13 to 33 dB, preventing the Wi-Fi PHY from locking onto frame preambles.
+
+#### 4. The Verification & Final Resolution
+1. **Socket Swap Test:** The original "defective" Garage board was removed from the secondary cable and plugged directly into the known-good Kitchen socket.
+2. **Instant Recovery:**
+   * Boot strapping immediately reverted to standard `boot:0x1e`.
+   * AGC noise floor dropped to clean **`-128.00 dBm`**.
+   * Running `scan` immediately reported **4 APs**.
+   * Pings from the Coordinator succeeded immediately with **LQI = 233 (RSSI = -34 dBm)**.
+   * Onboard LED executed `Garage blink 7` with 100% reliability.
+3. **Coordinator Ceramic Antenna Lock:** The Coordinator firmware was updated to explicitly bias the FM8625H RF switch to the ceramic antenna (`GPIO 3 = 0, GPIO 14 = 0`), elevating baseline network LQI from ~112 to **207–240**.
+
+---
+
 ## 11. Antenna Verification, Transmitter Placement & Field Survey Protocol
 
 ### 11.1 Hardware Antenna Architecture & Pin Mapping
