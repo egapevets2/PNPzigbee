@@ -15,6 +15,7 @@
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "driver/gpio.h"
+#include "esp_mac.h"
 
 static const char *TAG = "MESH_ESPNOW";
 
@@ -24,17 +25,48 @@ static const char *TAG = "MESH_ESPNOW";
 #define XIAO_RF_SWITCH_PWR_GPIO  GPIO_NUM_3
 #define XIAO_RF_SWITCH_SEL_GPIO  GPIO_NUM_14
 
-static void xiao_rf_switch_init(void)
+void mesh_zigbee_set_rf_pins(int pwr, int sel)
 {
     gpio_reset_pin(XIAO_RF_SWITCH_PWR_GPIO);
     gpio_set_direction(XIAO_RF_SWITCH_PWR_GPIO, GPIO_MODE_OUTPUT);
-    gpio_set_level(XIAO_RF_SWITCH_PWR_GPIO, 0); // LOW = Power ON RF switch
+    gpio_set_level(XIAO_RF_SWITCH_PWR_GPIO, pwr);
 
     gpio_reset_pin(XIAO_RF_SWITCH_SEL_GPIO);
     gpio_set_direction(XIAO_RF_SWITCH_SEL_GPIO, GPIO_MODE_OUTPUT);
-    gpio_set_level(XIAO_RF_SWITCH_SEL_GPIO, 0); // LOW = Ceramic antenna
+    gpio_set_level(XIAO_RF_SWITCH_SEL_GPIO, sel);
 
-    vTaskDelay(pdMS_TO_TICKS(50));
+    vTaskDelay(pdMS_TO_TICKS(20));
+    ESP_LOGI(TAG, "RF Switch set: PWR(GPIO3)=%d, SEL(GPIO14)=%d", pwr, sel);
+}
+
+void mesh_zigbee_set_rf_antenna(bool external)
+{
+    mesh_zigbee_set_rf_pins(0, external ? 1 : 0);
+}
+
+static void xiao_rf_switch_init(void)
+{
+    mesh_zigbee_set_rf_pins(0, 0); // PWR=0 (ON), SEL=0 (Ceramic)
+}
+
+static void wifi_promisc_cb(void *buf, wifi_promiscuous_pkt_type_t type)
+{
+    const wifi_promiscuous_pkt_t *pkt = (const wifi_promiscuous_pkt_t *)buf;
+    if (pkt && pkt->rx_ctrl.sig_len > 24) {
+        ESP_LOGI("SNIFF", "PKT len=%d rssi=%d", pkt->rx_ctrl.sig_len, pkt->rx_ctrl.rssi);
+    }
+}
+
+void mesh_zigbee_set_sniffer(bool enable)
+{
+    if (enable) {
+        esp_wifi_set_promiscuous_rx_cb(wifi_promisc_cb);
+        esp_wifi_set_promiscuous(true);
+        ESP_LOGI(TAG, "Wi-Fi promiscuous sniffer ENABLED");
+    } else {
+        esp_wifi_set_promiscuous(false);
+        ESP_LOGI(TAG, "Wi-Fi promiscuous sniffer DISABLED");
+    }
 }
 
 #define ESPNOW_WIFI_CHANNEL 1
@@ -60,6 +92,35 @@ static bool s_joined = true;
 static uint8_t s_coordinator_mac[ESP_NOW_ETH_ALEN] = {0xB4, 0x3A, 0x45, 0x8A, 0xC7, 0x18};
 static const uint8_t s_broadcast_mac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 static bool s_coordinator_known = true;
+static char s_local_node_name[MESH_TEXT_LEN] = "Kitchen";
+
+static void init_local_node_name(void)
+{
+    uint8_t mac[6] = {0};
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+        // Kitchen: B4:3A:45:8A:C6:40
+        // Garage:  B4:3A:45:8A:C7:C0
+        // Santafe: 58:E6:C5:1A:E8:A0
+        // aa:      58:E6:C5:1A:DD:D0
+        // bb:      58:E6:C5:13:6E:EC
+        if (mac[4] == 0xC6 && mac[5] == 0x40) {
+            strncpy(s_local_node_name, "Kitchen", sizeof(s_local_node_name) - 1);
+        } else if (mac[4] == 0xC7 && mac[5] == 0xC0) {
+            strncpy(s_local_node_name, "Garage", sizeof(s_local_node_name) - 1);
+        } else if (mac[4] == 0xE8 && mac[5] == 0xA0) {
+            strncpy(s_local_node_name, "Santafe", sizeof(s_local_node_name) - 1);
+        } else if (mac[4] == 0xDD && mac[5] == 0xD0) {
+            strncpy(s_local_node_name, "aa", sizeof(s_local_node_name) - 1);
+        } else if (mac[4] == 0x6E && mac[5] == 0xEC) {
+            strncpy(s_local_node_name, "bb", sizeof(s_local_node_name) - 1);
+        } else {
+            // Default to Garage if MAC doesn't match Kitchen
+            strncpy(s_local_node_name, "Garage", sizeof(s_local_node_name) - 1);
+        }
+        ESP_LOGI(TAG, "Local node MAC: %02X:%02X:%02X:%02X:%02X:%02X -> identified as '%s'",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], s_local_node_name);
+    }
+}
 
 static inline int16_t rssi_to_lqi(int8_t rssi)
 {
@@ -92,6 +153,11 @@ static void espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *
 {
     if (!recv_info || !data || len <= 0) return;
 
+    ESP_LOGI(TAG, "RAW RX: from %02x:%02x:%02x:%02x:%02x:%02x len=%d (RSSI=%d)",
+             recv_info->src_addr[0], recv_info->src_addr[1], recv_info->src_addr[2],
+             recv_info->src_addr[3], recv_info->src_addr[4], recv_info->src_addr[5],
+             len, recv_info->rx_ctrl ? recv_info->rx_ctrl->rssi : 0);
+
     // Automatically update coordinator MAC from sender
     memcpy(s_coordinator_mac, recv_info->src_addr, ESP_NOW_ETH_ALEN);
     ensure_peer_exists(s_coordinator_mac);
@@ -106,9 +172,9 @@ static void espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *
     if (len == sizeof(espnow_frame_t)) {
         const espnow_frame_t *frame = (const espnow_frame_t *)data;
 
-        // Verify target filtering
+        // Verify target filtering against dynamic local node name
         if (frame->target[0] != '\0' &&
-            strcasecmp(frame->target, "Kitchen") != 0 &&
+            strcasecmp(frame->target, s_local_node_name) != 0 &&
             strcasecmp(frame->target, "broadcast") != 0) {
             ESP_LOGD(TAG, "Ignoring frame addressed to '%s'", frame->target);
             return; // Not addressed to this node
@@ -149,7 +215,7 @@ static void mesh_tx_task(void *arg)
     while (1) {
         if (xQueueReceive(s_mesh_tx_queue, &msg, portMAX_DELAY) == pdTRUE) {
             if (msg.source[0] == '\0') {
-                strncpy(msg.source, "Kitchen", sizeof(msg.source) - 1);
+                strncpy(msg.source, s_local_node_name, sizeof(msg.source) - 1);
             }
 
             espnow_frame_t frame = {0};
@@ -160,7 +226,8 @@ static void mesh_tx_task(void *arg)
             frame.value2 = msg.value2;
             strncpy(frame.text, msg.text, sizeof(frame.text) - 1);
 
-            const uint8_t *dest_mac = s_coordinator_known ? s_coordinator_mac : s_broadcast_mac;
+            const uint8_t *dest_mac = (strcasecmp(frame.target, "broadcast") == 0) ? s_broadcast_mac :
+                                      (s_coordinator_known ? s_coordinator_mac : s_broadcast_mac);
             ensure_peer_exists(dest_mac);
 
             ESP_LOGI(TAG, "TX task: sending to %02x:%02x:%02x:%02x:%02x:%02x text='%s'",
@@ -219,6 +286,19 @@ esp_err_t mesh_zigbee_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
+    // Re-assert RF switch after Wi-Fi start in case Wi-Fi init affected pin configuration
+    xiao_rf_switch_init();
+
+    uint8_t primary_chan = 0;
+    wifi_second_chan_t second_chan = 0;
+    esp_wifi_get_channel(&primary_chan, &second_chan);
+    int8_t max_tx_power = 0;
+    esp_wifi_get_max_tx_power(&max_tx_power);
+    ESP_LOGI(TAG, "Wi-Fi Config: Actual Channel=%d (second=%d), Max TX Power=%d (0.25dBm units)",
+             primary_chan, second_chan, max_tx_power);
+    ESP_LOGI(TAG, "RF Switch pins: PWR(GPIO3)=%d, SEL(GPIO14)=%d",
+             gpio_get_level(XIAO_RF_SWITCH_PWR_GPIO), gpio_get_level(XIAO_RF_SWITCH_SEL_GPIO));
+
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_recv_cb(espnow_recv_cb));
     ESP_ERROR_CHECK(esp_now_register_send_cb(espnow_send_cb));
@@ -226,8 +306,10 @@ esp_err_t mesh_zigbee_init(void)
     ensure_peer_exists(s_broadcast_mac);
     ensure_peer_exists(s_coordinator_mac);
 
+    init_local_node_name();
+
     s_joined = true;
-    ESP_LOGI(TAG, "ESP-NOW radio initialized on Channel %d (Kitchen node online)", ESPNOW_WIFI_CHANNEL);
+    ESP_LOGI(TAG, "ESP-NOW radio initialized on Channel %d (%s node online)", primary_chan, s_local_node_name);
 
     xTaskCreate(mesh_tx_task, "mesh_tx_task", 3072, NULL, 5, NULL);
 
@@ -244,7 +326,7 @@ bool mesh_zigbee_send_text(const char *text)
 {
     if (!text || text[0] == '\0') return false;
     mesh_msg_t msg = {0};
-    strncpy(msg.source, "Kitchen", sizeof(msg.source) - 1);
+    strncpy(msg.source, s_local_node_name, sizeof(msg.source) - 1);
     strncpy(msg.target, "coordinator", sizeof(msg.target) - 1);
     strncpy(msg.text, text, sizeof(msg.text) - 1);
     return mesh_zigbee_send(msg);
@@ -254,7 +336,7 @@ bool mesh_zigbee_send_cmd(const char *cmd, int16_t value)
 {
     if (!cmd || cmd[0] == '\0') return false;
     mesh_msg_t msg = {0};
-    strncpy(msg.source, "Kitchen", sizeof(msg.source) - 1);
+    strncpy(msg.source, s_local_node_name, sizeof(msg.source) - 1);
     strncpy(msg.target, "coordinator", sizeof(msg.target) - 1);
     strncpy(msg.cmd, cmd, sizeof(msg.cmd) - 1);
     msg.value = value;
@@ -270,6 +352,16 @@ bool mesh_zigbee_receive(mesh_msg_t *msg, TickType_t timeout)
 bool mesh_zigbee_is_joined(void)
 {
     return s_joined;
+}
+
+bool mesh_zigbee_send_broadcast(const char *text)
+{
+    if (!text || text[0] == '\0') return false;
+    mesh_msg_t msg = {0};
+    strncpy(msg.source, s_local_node_name, sizeof(msg.source) - 1);
+    strncpy(msg.target, "broadcast", sizeof(msg.target) - 1);
+    strncpy(msg.text, text, sizeof(msg.text) - 1);
+    return mesh_zigbee_send(msg);
 }
 
 int16_t mesh_zigbee_last_lqi(void)

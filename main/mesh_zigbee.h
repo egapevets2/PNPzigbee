@@ -29,6 +29,10 @@ bool mesh_zigbee_send_cmd(const char *cmd, int16_t value);
 bool mesh_zigbee_receive(mesh_msg_t *msg, TickType_t timeout);
 bool mesh_zigbee_is_joined(void);
 int16_t mesh_zigbee_last_lqi(void);
+void mesh_zigbee_set_rf_antenna(bool external);
+void mesh_zigbee_set_rf_pins(int pwr, int sel);
+void mesh_zigbee_set_sniffer(bool enable);
+bool mesh_zigbee_send_broadcast(const char *text);
 
 #ifdef __cplusplus
 }

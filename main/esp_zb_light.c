@@ -9,6 +9,7 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
+#include "esp_wifi.h"
 
 #include "light_driver.h"
 #include "esp_zb_light.h"
@@ -115,7 +116,60 @@ static void serial_console_task(void *arg)
 
             line[pos] = '\0';
             strip_line_endings(line);
-            mesh_serial_writef("\r\n> %s\r\n", line);
+            if (strncmp(line, "rf ", 3) == 0) {
+                int pwr = 0, sel = 0;
+                if (sscanf(line + 3, "%d %d", &pwr, &sel) == 2) {
+                    mesh_zigbee_set_rf_pins(pwr, sel);
+                    mesh_serial_writef("RF pins set: PWR=%d, SEL=%d\r\n", pwr, sel);
+                }
+                pos = 0;
+                memset(line, 0, sizeof(line));
+                continue;
+            }
+
+            if (strncmp(line, "bcast ", 6) == 0) {
+                mesh_zigbee_send_broadcast(line + 6);
+                mesh_serial_write("broadcast queued\r\n");
+                pos = 0;
+                memset(line, 0, sizeof(line));
+                continue;
+            }
+
+            if (strncmp(line, "sniff ", 6) == 0) {
+                int en = atoi(line + 6);
+                mesh_zigbee_set_sniffer(en != 0);
+                mesh_serial_writef("sniffer: %d\r\n", en);
+                pos = 0;
+                memset(line, 0, sizeof(line));
+                continue;
+            }
+
+            if (strcmp(line, "scan") == 0) {
+                mesh_serial_write("Scanning Wi-Fi...\r\n");
+                wifi_scan_config_t scan_cfg = {0};
+                esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
+                if (err == ESP_OK) {
+                    uint16_t ap_count = 0;
+                    esp_wifi_scan_get_ap_num(&ap_count);
+                    mesh_serial_writef("Found %d APs\r\n", ap_count);
+                    if (ap_count > 0) {
+                        wifi_ap_record_t *ap_list = malloc(sizeof(wifi_ap_record_t) * ap_count);
+                        if (ap_list) {
+                            esp_wifi_scan_get_ap_records(&ap_count, ap_list);
+                            for (int i = 0; i < ap_count && i < 10; i++) {
+                                mesh_serial_writef("  SSID: %s, RSSI: %d, Chan: %d\r\n",
+                                                   ap_list[i].ssid, ap_list[i].rssi, ap_list[i].primary);
+                            }
+                            free(ap_list);
+                        }
+                    }
+                } else {
+                    mesh_serial_writef("Scan failed: %s\r\n", esp_err_to_name(err));
+                }
+                pos = 0;
+                memset(line, 0, sizeof(line));
+                continue;
+            }
 
             if (!mesh_zigbee_send_text(line)) {
                 mesh_serial_write("error: TX queue full\r\n");
@@ -199,9 +253,11 @@ static void app_msg_task(void *arg)
                     continue;
                 }
 
-                // If the command is ping, setDAC, or SetupSerialBridge, the dedicated response is sent separately!
+                // If the command is ping, setDAC, setx, clrx, or SetupSerialBridge, the dedicated response is sent separately!
                 // Do NOT send an ACK here so it doesn't conflict or duplicate the reply.
-                if (strcasecmp(msg.cmd, "ping") != 0 && strcasecmp(msg.cmd, "pingx") != 0 && strcasecmp(msg.cmd, "setDAC") != 0 && strcasecmp(msg.cmd, "SetupSerialBridge") != 0) {
+                if (strcasecmp(msg.cmd, "ping") != 0 && strcasecmp(msg.cmd, "pingx") != 0 &&
+                    strcasecmp(msg.cmd, "setDAC") != 0 && strcasecmp(msg.cmd, "SetupSerialBridge") != 0 &&
+                    strcasecmp(msg.cmd, "setx") != 0 && strcasecmp(msg.cmd, "clrx") != 0) {
                     if (strcmp(msg.text, "ACK") != 0 && msg.source[0] != '\0') {
                         mesh_zigbee_send_text("ACK");
                     }
