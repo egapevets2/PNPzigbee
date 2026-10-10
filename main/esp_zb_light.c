@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "driver/gpio.h"
 #include "esp_wifi.h"
+#include "esp_system.h"
 
 #include "light_driver.h"
 #include "esp_zb_light.h"
@@ -317,6 +318,12 @@ static void app_msg_task(void *arg)
             else if (strcmp(msg.cmd, "SetupSerialBridge") == 0) {
                 ESP_ERROR_CHECK(serial_bridge_init());
                 mesh_zigbee_send_text("SETUP SERIAL OK");
+            }
+            else if (strcasecmp(msg.cmd, "reboot") == 0 || strcasecmp(msg.cmd, "restart") == 0) {
+                if (!text_message) mesh_zigbee_send_text("REBOOTING");
+                ESP_LOGI(TAG, "Reboot command received, restarting node in 150ms...");
+                vTaskDelay(pdMS_TO_TICKS(150));
+                esp_restart();
             }
             // --- Dispatch Layer ---
             else if (pwm_driver_is_cmd(msg.cmd))   pwm_driver_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
