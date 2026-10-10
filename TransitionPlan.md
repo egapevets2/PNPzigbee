@@ -321,13 +321,13 @@ gantt
 
 When this transition plan is executed in the new chat, the system is verified against the following criteria:
 
-- [ ] **Single Compilation Target:** A single build command (`idf.py build` inside `firmware/`) produces the sole binary used across all network nodes.
-- [ ] **Zero Hardcoded MACs:** Source code contains no static MAC addresses for `Kitchen`, `Garage`, or `Coordinator`.
-- [ ] **Workbench Provisioning:** Typing `SetRole Coordinator` or `SetRole EndDevice <Name>` on a fresh board successfully stores the role in NVS and activates that personality after reboot.
-- [ ] **Power-Cycle Recovery:** Powering off the Coordinator and powering it back on restores full network communication in < 500 ms without requiring node reboots.
-- [ ] **Random Boot Order Resilience:** Nodes powering on before, during, or after Coordinator boot are detected and registered automatically.
-- [ ] **RF Integrity Preserved:** Long Range mode (250 Kbps PHY) and +20 dBm output power remain active on all devices.
-- [ ] **Regression Suite Pass:** Automated test suite passes 100% of end-to-end HIL tests:
+- [x] **Single Compilation Target:** A single build command (`idf.py build` inside `firmware/`) produces the sole binary used across all network nodes.
+- [x] **Zero Hardcoded MACs:** Source code contains no static MAC addresses for `Kitchen`, `Garage`, or `Coordinator`.
+- [x] **Workbench Provisioning:** Typing `SetRole Coordinator` or `SetRole EndDevice <Name>` on a fresh board successfully stores the role in NVS and activates that personality after reboot.
+- [x] **Power-Cycle Recovery:** Powering off the Coordinator and powering it back on restores full network communication in < 500 ms without requiring node reboots.
+- [x] **Random Boot Order Resilience:** Nodes powering on before, during, or after Coordinator boot are detected and registered automatically.
+- [x] **RF Integrity Preserved:** Long Range mode (250 Kbps PHY) and +20 dBm output power remain active on all devices.
+- [x] **Regression Suite Pass:** Automated test suite passes 100% of end-to-end HIL tests:
   * Two-way Ping & Round-trip (`ping` -> `GotPing`)
   * Hardware DAC & ADC Loopback (`setDAC` -> `ReadADC`)
   * Visual Actuation (`blinkx`, `blink`)
