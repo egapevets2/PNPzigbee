@@ -17,6 +17,7 @@
 #include "driver/gpio.h"
 #include "esp_mac.h"
 #include "nvs_config.h"
+#include "discovery.h"
 
 static const char *TAG = "MESH_ESPNOW";
 
@@ -70,29 +71,17 @@ void mesh_zigbee_set_sniffer(bool enable)
     }
 }
 
-#define ESPNOW_WIFI_CHANNEL 1
 #define MESH_RX_QUEUE_LEN 16
 #define MESH_TX_QUEUE_LEN 16
-
-typedef struct __attribute__((packed))
-{
-    char source[MESH_TEXT_LEN];
-    char target[MESH_TEXT_LEN];
-    char cmd[MESH_TEXT_LEN];
-    int16_t value;
-    int16_t value2;
-    char text[MESH_LINE_LEN];
-} espnow_frame_t;
 
 static QueueHandle_t s_mesh_rx_queue = NULL;
 static QueueHandle_t s_mesh_tx_queue = NULL;
 static int16_t s_last_rx_lqi = 255;
 static bool s_joined = true;
 
-// Known coordinator MAC address: B4:3A:45:8A:C7:18
-static uint8_t s_coordinator_mac[ESP_NOW_ETH_ALEN] = {0xB4, 0x3A, 0x45, 0x8A, 0xC7, 0x18};
-static const uint8_t s_broadcast_mac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-static bool s_coordinator_known = true;
+// Dynamic coordinator MAC (learned via Tri-Layer Discovery)
+static uint8_t s_coordinator_mac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+static bool s_coordinator_known = false;
 static char s_local_node_name[MESH_TEXT_LEN] = "Kitchen";
 
 static void init_local_node_name(void)
@@ -130,41 +119,6 @@ static void init_local_node_name(void)
     }
 }
 
-static inline int16_t rssi_to_lqi(int8_t rssi)
-{
-    if (rssi <= -100) return 0;
-    if (rssi >= -30)  return 255;
-    return (int16_t)(((rssi + 100) * 255) / 70);
-}
-
-static bool ensure_peer_exists(const uint8_t *mac)
-{
-    if (!mac) return false;
-    if (esp_now_is_peer_exist(mac)) {
-        return true;
-    }
-    esp_now_peer_info_t peer = {0};
-    memcpy(peer.peer_addr, mac, ESP_NOW_ETH_ALEN);
-    peer.channel = ESPNOW_WIFI_CHANNEL;
-    peer.ifidx = WIFI_IF_STA;
-    peer.encrypt = false;
-    esp_err_t err = esp_now_add_peer(&peer);
-    if (err != ESP_OK && err != ESP_ERR_ESPNOW_EXIST) {
-        ESP_LOGE(TAG, "Failed to add peer %02x:%02x:%02x:%02x:%02x:%02x: %s",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], esp_err_to_name(err));
-        return false;
-    }
-
-    esp_now_rate_config_t rate_cfg = {
-        .phymode = WIFI_PHY_MODE_LR,
-        .rate = WIFI_PHY_RATE_LORA_250K,
-        .ersu = false,
-        .dcm = false,
-    };
-    esp_now_set_peer_rate_config(mac, &rate_cfg);
-    return true;
-}
-
 static void espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len)
 {
     if (!recv_info || !data || len <= 0) return;
@@ -174,19 +128,27 @@ static void espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *
              recv_info->src_addr[3], recv_info->src_addr[4], recv_info->src_addr[5],
              len, recv_info->rx_ctrl ? recv_info->rx_ctrl->rssi : 0);
 
-    // Automatically update coordinator MAC from sender
-    memcpy(s_coordinator_mac, recv_info->src_addr, ESP_NOW_ETH_ALEN);
-    ensure_peer_exists(s_coordinator_mac);
-    s_coordinator_known = true;
-
     if (recv_info->rx_ctrl) {
         s_last_rx_lqi = rssi_to_lqi(recv_info->rx_ctrl->rssi);
     }
 
-    mesh_msg_t msg = {0};
-
     if (len == sizeof(espnow_frame_t)) {
         const espnow_frame_t *frame = (const espnow_frame_t *)data;
+
+        // Tri-Layer Discovery protocol check
+        if (discovery_node_handle_rx(recv_info->src_addr, frame, s_last_rx_lqi)) {
+            memcpy(s_coordinator_mac, recv_info->src_addr, ESP_NOW_ETH_ALEN);
+            ensure_peer_exists(s_coordinator_mac);
+            s_coordinator_known = true;
+            return;
+        }
+
+        // Automatically update coordinator MAC from sender if it's from coordinator
+        if (strcasecmp(frame->source, "coordinator") == 0) {
+            memcpy(s_coordinator_mac, recv_info->src_addr, ESP_NOW_ETH_ALEN);
+            ensure_peer_exists(s_coordinator_mac);
+            s_coordinator_known = true;
+        }
 
         // Verify target filtering against dynamic local node name
         if (frame->target[0] != '\0' &&
@@ -196,6 +158,7 @@ static void espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *
             return; // Not addressed to this node
         }
 
+        mesh_msg_t msg = {0};
         strncpy(msg.source, frame->source[0] ? frame->source : "coordinator", sizeof(msg.source) - 1);
         strncpy(msg.target, frame->target, sizeof(msg.target) - 1);
         strncpy(msg.cmd, frame->cmd, sizeof(msg.cmd) - 1);
@@ -204,18 +167,25 @@ static void espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *
         strncpy(msg.text, frame->text, sizeof(msg.text) - 1);
         ESP_LOGI(TAG, "ESP-NOW RX frame: src='%s' tgt='%s' cmd='%s' text='%s'",
                  msg.source, msg.target, msg.cmd, msg.text);
+
+        if (s_mesh_rx_queue) {
+            if (xQueueSend(s_mesh_rx_queue, &msg, 0) != pdTRUE) {
+                ESP_LOGW(TAG, "RX queue full, dropping packet: %s", msg.text);
+            }
+        }
     } else {
         // Plain ASCII string fallback
+        mesh_msg_t msg = {0};
         size_t copy_len = (size_t)len < (sizeof(msg.text) - 1) ? (size_t)len : (sizeof(msg.text) - 1);
         memcpy(msg.text, data, copy_len);
         msg.text[copy_len] = '\0';
         strncpy(msg.source, "coordinator", sizeof(msg.source) - 1);
         ESP_LOGI(TAG, "ESP-NOW RX text: src='%s' text='%s'", msg.source, msg.text);
-    }
 
-    if (s_mesh_rx_queue) {
-        if (xQueueSend(s_mesh_rx_queue, &msg, 0) != pdTRUE) {
-            ESP_LOGW(TAG, "RX queue full, dropping packet: %s", msg.text);
+        if (s_mesh_rx_queue) {
+            if (xQueueSend(s_mesh_rx_queue, &msg, 0) != pdTRUE) {
+                ESP_LOGW(TAG, "RX queue full, dropping packet: %s", msg.text);
+            }
         }
     }
 }
@@ -326,9 +296,20 @@ esp_err_t mesh_zigbee_init(void)
     ESP_ERROR_CHECK(esp_now_register_send_cb(espnow_send_cb));
 
     ensure_peer_exists(s_broadcast_mac);
-    ensure_peer_exists(s_coordinator_mac);
+
+    uint8_t stored_coord[ESP_NOW_ETH_ALEN] = {0};
+    if (nvs_config_get_coord_mac(stored_coord) == ESP_OK && stored_coord[0] != 0xFF) {
+        memcpy(s_coordinator_mac, stored_coord, ESP_NOW_ETH_ALEN);
+        s_coordinator_known = true;
+        ensure_peer_exists(s_coordinator_mac);
+        ESP_LOGI(TAG, "Restored learned coordinator MAC from NVS: %02X:%02X:%02X:%02X:%02X:%02X",
+                 s_coordinator_mac[0], s_coordinator_mac[1], s_coordinator_mac[2],
+                 s_coordinator_mac[3], s_coordinator_mac[4], s_coordinator_mac[5]);
+    }
 
     init_local_node_name();
+
+    ESP_ERROR_CHECK(discovery_node_init());
 
     s_joined = true;
     ESP_LOGI(TAG, "ESP-NOW radio initialized on Channel %d (%s node online)", primary_chan, s_local_node_name);
