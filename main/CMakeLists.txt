@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "Expand8.c" "I2Craw.c" "VL53L1X.c" "BLDC_driver.c" "ledc_manager.c" "pwm_driver.c" "Stepper.c" "adc.c" "UpstreamQ.c" "GPIO_handler.c" "motor_driver.c" "esp_zb_light.c" 
+    SRCS "nvs_config.c" "Expand8.c" "I2Craw.c" "VL53L1X.c" "BLDC_driver.c" "ledc_manager.c" "pwm_driver.c" "Stepper.c" "adc.c" "UpstreamQ.c" "GPIO_handler.c" "motor_driver.c" "esp_zb_light.c" 
          "light_driver.c"
          "mesh_serial.c"
          "mesh_zigbee.c"
@@ -7,5 +7,5 @@ idf_component_register(
          "apds9930.c" 
          "NeoPixel.c" 
     INCLUDE_DIRS "."
-    PRIV_REQUIRES esp_driver_gpio esp_driver_uart esp_driver_usb_serial_jtag esp_driver_i2c esp_driver_ledc nvs_flash esp_adc esp_wifi esp_event esp_netif
+    PRIV_REQUIRES esp_driver_gpio esp_driver_uart esp_driver_usb_serial_jtag esp_driver_i2c esp_driver_ledc nvs_flash esp_adc esp_wifi esp_event esp_netif esp_timer
 )

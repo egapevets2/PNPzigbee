@@ -16,6 +16,7 @@
 #include "esp_event.h"
 #include "driver/gpio.h"
 #include "esp_mac.h"
+#include "nvs_config.h"
 
 static const char *TAG = "MESH_ESPNOW";
 
@@ -96,6 +97,13 @@ static char s_local_node_name[MESH_TEXT_LEN] = "Kitchen";
 
 static void init_local_node_name(void)
 {
+    if (nvs_config_get_role() == ROLE_END_DEVICE) {
+        strncpy(s_local_node_name, nvs_config_get_name(), sizeof(s_local_node_name) - 1);
+        s_local_node_name[sizeof(s_local_node_name) - 1] = '\0';
+        ESP_LOGI(TAG, "Local node name configured from NVS: '%s'", s_local_node_name);
+        return;
+    }
+
     uint8_t mac[6] = {0};
     if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
         // Kitchen: B4:3A:45:8A:C6:40
@@ -117,8 +125,8 @@ static void init_local_node_name(void)
             // Default to Garage if MAC doesn't match Kitchen
             strncpy(s_local_node_name, "Garage", sizeof(s_local_node_name) - 1);
         }
-        ESP_LOGI(TAG, "Local node MAC: %02X:%02X:%02X:%02X:%02X:%02X -> identified as '%s'",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], s_local_node_name);
+        ESP_LOGI(TAG, "Unprovisioned node: inferred name '%s' from MAC %02X:%02X:%02X:%02X:%02X:%02X",
+                 s_local_node_name, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     }
 }
 
@@ -290,9 +298,14 @@ esp_err_t mesh_zigbee_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_ERROR_CHECK(esp_wifi_set_channel(ESPNOW_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE));
-    ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR));
-    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(80)); // 80 * 0.25 dBm = 20 dBm (Maximum RF TX Power)
+    uint8_t target_chan = nvs_config_get_channel();
+    ESP_ERROR_CHECK(esp_wifi_set_channel(target_chan, WIFI_SECOND_CHAN_NONE));
+    uint8_t protocol = WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N;
+    if (nvs_config_get_lr_mode()) {
+        protocol |= WIFI_PROTOCOL_LR;
+    }
+    ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, protocol));
+    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(nvs_config_get_tx_power()));
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
     // Re-assert RF switch after Wi-Fi start in case Wi-Fi init affected pin configuration

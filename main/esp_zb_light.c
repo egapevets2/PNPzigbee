@@ -29,6 +29,7 @@
 #include "VL53L1X.h"
 #include "I2Craw.h"
 #include "Expand8.h"
+#include "nvs_config.h"
 
 static const char *TAG = "LIGHT_APP";
 
@@ -102,8 +103,12 @@ static void serial_console_task(void *arg)
     char line[MESH_LINE_LEN] = {0};
     size_t pos = 0;
 
-    ESP_LOGI(TAG, "Serial upstream interface ready: type text to send to coordinator");
-    mesh_serial_write("\r\nSerial ready. Type text to send to coordinator.\r\n");
+    ESP_LOGI(TAG, "Serial interface ready: type text or workbench CLI commands");
+    if (nvs_config_get_role() == ROLE_UNPROVISIONED) {
+        mesh_serial_write("\r\n[SYSTEM] Node role: UNPROVISIONED. Use 'SetRole EndDevice <Name>' or 'SetRole Coordinator' to provision.\r\nworkbench> ");
+    } else {
+        mesh_serial_writef("\r\n[SYSTEM] Node '%s' ready. Type text to send to coordinator.\r\nnode> ", nvs_config_get_name());
+    }
 
     while (1)
     {
@@ -114,10 +119,30 @@ static void serial_console_task(void *arg)
         }
 
         if (ch == '\r' || ch == '\n') {
-            if (pos == 0) continue;
+            if (pos == 0) {
+                if (nvs_config_get_role() == ROLE_UNPROVISIONED) {
+                    mesh_serial_write("\r\nworkbench> ");
+                } else {
+                    mesh_serial_write("\r\nnode> ");
+                }
+                continue;
+            }
 
             line[pos] = '\0';
             strip_line_endings(line);
+            mesh_serial_writef("\r\n> %s\r\n", line);
+
+            if (nvs_config_handle_cli(line)) {
+                pos = 0;
+                memset(line, 0, sizeof(line));
+                if (nvs_config_get_role() == ROLE_UNPROVISIONED) {
+                    mesh_serial_write("workbench> ");
+                } else {
+                    mesh_serial_write("node> ");
+                }
+                continue;
+            }
+
             if (strncmp(line, "rf ", 3) == 0) {
                 int pwr = 0, sel = 0;
                 if (sscanf(line + 3, "%d %d", &pwr, &sel) == 2) {
@@ -315,6 +340,7 @@ static void app_msg_task(void *arg)
 void app_main(void)
 {
     ESP_LOGI(TAG, "=== PNPzigbee ESP-NOW node build %s %s ===", __DATE__, __TIME__);
+    ESP_ERROR_CHECK(nvs_config_init());
     ledc_manager_init();
 
     light_driver_init(LIGHT_DEFAULT_OFF);
