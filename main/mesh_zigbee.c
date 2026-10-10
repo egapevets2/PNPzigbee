@@ -233,22 +233,12 @@ static void mesh_tx_task(void *arg)
     }
 }
 
-esp_err_t mesh_zigbee_init(void)
+esp_err_t mesh_radio_init(void)
 {
-    if (!s_mesh_rx_queue) {
-        s_mesh_rx_queue = xQueueCreate(MESH_RX_QUEUE_LEN, sizeof(mesh_msg_t));
+    static bool s_radio_initialized = false;
+    if (s_radio_initialized) {
+        return ESP_OK;
     }
-    if (!s_mesh_tx_queue) {
-        s_mesh_tx_queue = xQueueCreate(MESH_TX_QUEUE_LEN, sizeof(mesh_msg_t));
-    }
-    ESP_RETURN_ON_FALSE(s_mesh_rx_queue && s_mesh_tx_queue, ESP_FAIL, TAG, "Failed to create queues");
-
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_RETURN_ON_ERROR(ret, TAG, "NVS flash init failed");
 
     esp_err_t netif_err = esp_netif_init();
     if (netif_err != ESP_OK && netif_err != ESP_ERR_INVALID_STATE) {
@@ -292,6 +282,23 @@ esp_err_t mesh_zigbee_init(void)
              gpio_get_level(XIAO_RF_SWITCH_PWR_GPIO), gpio_get_level(XIAO_RF_SWITCH_SEL_GPIO));
 
     ESP_ERROR_CHECK(esp_now_init());
+
+    s_radio_initialized = true;
+    return ESP_OK;
+}
+
+esp_err_t mesh_zigbee_init(void)
+{
+    ESP_ERROR_CHECK(mesh_radio_init());
+
+    if (!s_mesh_rx_queue) {
+        s_mesh_rx_queue = xQueueCreate(MESH_RX_QUEUE_LEN, sizeof(mesh_msg_t));
+    }
+    if (!s_mesh_tx_queue) {
+        s_mesh_tx_queue = xQueueCreate(MESH_TX_QUEUE_LEN, sizeof(mesh_msg_t));
+    }
+    ESP_RETURN_ON_FALSE(s_mesh_rx_queue && s_mesh_tx_queue, ESP_FAIL, TAG, "Failed to create queues");
+
     ESP_ERROR_CHECK(esp_now_register_recv_cb(espnow_recv_cb));
     ESP_ERROR_CHECK(esp_now_register_send_cb(espnow_send_cb));
 
@@ -312,6 +319,9 @@ esp_err_t mesh_zigbee_init(void)
     ESP_ERROR_CHECK(discovery_node_init());
 
     s_joined = true;
+    uint8_t primary_chan = 0;
+    wifi_second_chan_t second_chan = 0;
+    esp_wifi_get_channel(&primary_chan, &second_chan);
     ESP_LOGI(TAG, "ESP-NOW radio initialized on Channel %d (%s node online)", primary_chan, s_local_node_name);
 
     xTaskCreate(mesh_tx_task, "mesh_tx_task", 3072, NULL, 5, NULL);

@@ -22,6 +22,7 @@ typedef struct
     char text[MESH_LINE_LEN];
 } mesh_msg_t;
 
+esp_err_t mesh_radio_init(void);
 esp_err_t mesh_zigbee_init(void);
 bool mesh_zigbee_send(mesh_msg_t msg);
 bool mesh_zigbee_send_text(const char *text);

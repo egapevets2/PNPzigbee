@@ -30,6 +30,7 @@
 #include "I2Craw.h"
 #include "Expand8.h"
 #include "nvs_config.h"
+#include "serial_gateway.h"
 
 static const char *TAG = "LIGHT_APP";
 
@@ -339,17 +340,39 @@ static void app_msg_task(void *arg)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "=== PNPzigbee ESP-NOW node build %s %s ===", __DATE__, __TIME__);
+    ESP_LOGI(TAG, "=== Unified ESP-NOW Mesh Firmware build %s %s ===", __DATE__, __TIME__);
     ESP_ERROR_CHECK(nvs_config_init());
-    ledc_manager_init();
-
-    light_driver_init(LIGHT_DEFAULT_OFF);
-
     ESP_ERROR_CHECK(mesh_serial_init());
-    ESP_ERROR_CHECK(mesh_zigbee_init());
-    UpstreamQ_Init();
 
-    xTaskCreate(app_msg_task, "app_msg_task", 3072, NULL, 5, NULL);
-    xTaskCreate(serial_console_task, "serial_console_task", 3072, NULL, 5, NULL);
-    xTaskCreate(button_task, "button_task", 2048, NULL, 5, NULL);
+    mesh_role_t role = nvs_config_get_role();
+    ESP_LOGI(TAG, "Active Role: %d (%s), Node Name: '%s', Channel: %d",
+             role,
+             role == ROLE_COORDINATOR ? "COORDINATOR" :
+             role == ROLE_END_DEVICE  ? "END_DEVICE" : "UNPROVISIONED",
+             nvs_config_get_name(),
+             nvs_config_get_channel());
+
+    // Initialize unified radio hardware (Wi-Fi STA, LR PHY, RF switch, ESP-NOW)
+    ESP_ERROR_CHECK(mesh_radio_init());
+
+    if (role == ROLE_COORDINATOR) {
+        ESP_LOGI(TAG, "Starting Coordinator personality...");
+        ESP_ERROR_CHECK(serial_gateway_init());
+    }
+    else if (role == ROLE_END_DEVICE) {
+        ESP_LOGI(TAG, "Starting End Device personality ('%s')...", nvs_config_get_name());
+        ledc_manager_init();
+        light_driver_init(LIGHT_DEFAULT_OFF);
+        UpstreamQ_Init();
+        ESP_ERROR_CHECK(mesh_zigbee_init());
+
+        xTaskCreate(app_msg_task, "app_msg_task", 3072, NULL, 5, NULL);
+        xTaskCreate(serial_console_task, "serial_console_task", 3072, NULL, 5, NULL);
+        xTaskCreate(button_task, "button_task", 2048, NULL, 5, NULL);
+    }
+    else {
+        ESP_LOGW(TAG, "Node is UNPROVISIONED. Entering workbench provisioning mode.");
+        light_driver_init(LIGHT_DEFAULT_OFF);
+        xTaskCreate(serial_console_task, "serial_console_task", 3072, NULL, 5, NULL);
+    }
 }
