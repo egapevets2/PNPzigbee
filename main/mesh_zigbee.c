@@ -146,6 +146,14 @@ static bool ensure_peer_exists(const uint8_t *mac)
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], esp_err_to_name(err));
         return false;
     }
+
+    esp_now_rate_config_t rate_cfg = {
+        .phymode = WIFI_PHY_MODE_LR,
+        .rate = WIFI_PHY_RATE_LORA_250K,
+        .ersu = false,
+        .dcm = false,
+    };
+    esp_now_set_peer_rate_config(mac, &rate_cfg);
     return true;
 }
 
@@ -283,7 +291,8 @@ esp_err_t mesh_zigbee_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_set_channel(ESPNOW_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE));
-    ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
+    ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR));
+    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(80)); // 80 * 0.25 dBm = 20 dBm (Maximum RF TX Power)
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
     // Re-assert RF switch after Wi-Fi start in case Wi-Fi init affected pin configuration
@@ -294,8 +303,8 @@ esp_err_t mesh_zigbee_init(void)
     esp_wifi_get_channel(&primary_chan, &second_chan);
     int8_t max_tx_power = 0;
     esp_wifi_get_max_tx_power(&max_tx_power);
-    ESP_LOGI(TAG, "Wi-Fi Config: Actual Channel=%d (second=%d), Max TX Power=%d (0.25dBm units)",
-             primary_chan, second_chan, max_tx_power);
+    ESP_LOGI(TAG, "Wi-Fi Config: Actual Channel=%d (second=%d), Max TX Power=%d (0.25dBm units, %.2fdBm), LR Mode enabled",
+             primary_chan, second_chan, max_tx_power, max_tx_power * 0.25f);
     ESP_LOGI(TAG, "RF Switch pins: PWR(GPIO3)=%d, SEL(GPIO14)=%d",
              gpio_get_level(XIAO_RF_SWITCH_PWR_GPIO), gpio_get_level(XIAO_RF_SWITCH_SEL_GPIO));
 

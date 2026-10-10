@@ -28,6 +28,7 @@
 #include "ledc_manager.h"
 #include "VL53L1X.h"
 #include "I2Craw.h"
+#include "Expand8.h"
 
 static const char *TAG = "LIGHT_APP";
 
@@ -57,7 +58,7 @@ static bool parse_text_for_local_action(const char *line, char *cmd, size_t cmd_
     if (fields < 1) return false;
 
     *value1 = 0;
-    *value2 = 0;
+    *value2 = -1;
 
     // NO TARGET: First word is the command
     if (strcmp(first, "blink") == 0 || strcmp(first, "on") == 0 || strcmp(first, "off") == 0 ||
@@ -73,7 +74,8 @@ static bool parse_text_for_local_action(const char *line, char *cmd, size_t cmd_
         stepper_is_cmd(first)      ||
         proximity_is_cmd(first)    ||
         vl53l1x_is_cmd(first)      ||
-        I2Craw_is_cmd(first))
+        I2Craw_is_cmd(first)       ||
+        expand8_is_cmd(first))
     {
         strncpy(cmd, first, cmd_len - 1);
         if (fields >= 2) *value1 = (int16_t)atoi(second);
@@ -253,11 +255,12 @@ static void app_msg_task(void *arg)
                     continue;
                 }
 
-                // If the command is ping, setDAC, setx, clrx, or SetupSerialBridge, the dedicated response is sent separately!
+                // If the command is ping, setDAC, setx, clrx, SetupSerialBridge, rdExpand8, or SetupExpand8, the dedicated response is sent separately!
                 // Do NOT send an ACK here so it doesn't conflict or duplicate the reply.
                 if (strcasecmp(msg.cmd, "ping") != 0 && strcasecmp(msg.cmd, "pingx") != 0 &&
                     strcasecmp(msg.cmd, "setDAC") != 0 && strcasecmp(msg.cmd, "SetupSerialBridge") != 0 &&
-                    strcasecmp(msg.cmd, "setx") != 0 && strcasecmp(msg.cmd, "clrx") != 0) {
+                    strcasecmp(msg.cmd, "setx") != 0 && strcasecmp(msg.cmd, "clrx") != 0 &&
+                    strcasecmp(msg.cmd, "rdExpand8") != 0 && strcasecmp(msg.cmd, "SetupExpand8") != 0) {
                     if (strcmp(msg.text, "ACK") != 0 && msg.source[0] != '\0') {
                         mesh_zigbee_send_text("ACK");
                     }
@@ -300,6 +303,7 @@ static void app_msg_task(void *arg)
             else if (proximity_is_cmd(msg.cmd))    proximity_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             else if (vl53l1x_is_cmd(msg.cmd))      vl53l1x_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             else if (I2Craw_is_cmd(msg.cmd))       I2Craw_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
+            else if (expand8_is_cmd(msg.cmd))      expand8_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             // ----------------------
             else {
                 if (!text_message) mesh_zigbee_send_text("INVALID");

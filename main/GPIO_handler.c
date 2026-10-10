@@ -27,7 +27,14 @@ typedef struct GPIO_handler
     bool PastState;
 } GPIO_t;
 
-GPIO_t GPIOlist[N_GPIO];
+GPIO_t GPIOlist[N_GPIO] = {
+    {-1, GPIO_INPUT, false, false},
+    {-1, GPIO_INPUT, false, false},
+    {-1, GPIO_INPUT, false, false},
+    {-1, GPIO_INPUT, false, false},
+    {-1, GPIO_INPUT, false, false},
+    {-1, GPIO_INPUT, false, false}
+};
 
 static int find_or_allocate_gpio(int gpio_num)
 {
@@ -137,11 +144,15 @@ static void gpio_poll_task(void *arg)
 
 void GPIO_Handler_Init(void)
 {
+    static bool task_created = false;
     for (int i = 0; i < N_GPIO; i++) {
         GPIOlist[i].index = -1;
     }
-    xTaskCreate(gpio_poll_task, "gpio_poll_task", 2048, NULL, 5, NULL);
-    ESP_LOGI(TAG, "GPIO Polling task initialized.");
+    if (!task_created) {
+        xTaskCreate(gpio_poll_task, "gpio_poll_task", 2048, NULL, 5, NULL);
+        task_created = true;
+        ESP_LOGI(TAG, "GPIO Polling task initialized.");
+    }
 }
 
 bool gpio_handler_is_cmd(const char *cmd)

@@ -29,8 +29,13 @@
 static const char *TAG = "MOTOR_DRIVER";
 
 // --- MOTOR CONFIGURATION ---
-#define MOTOR_PIN_1  GPIO_NUM_18 // DRV8833 IN1 or Cytron PWM
-#define MOTOR_PIN_2  GPIO_NUM_20 // DRV8833 IN2 or Cytron DIR
+// DRV8833 (Mode 0: Dual-PWM H-Bridge)
+#define DRV8833_PIN_IN1  GPIO_NUM_18
+#define DRV8833_PIN_IN2  GPIO_NUM_20
+
+// Cytron 10C (Mode 1: PWM on Pin 18, DIR on Pin 20)
+#define CYTRON_PIN_PWM   GPIO_NUM_18
+#define CYTRON_PIN_DIR   GPIO_NUM_20
 
 #define LEDC_MODE               LEDC_LOW_SPEED_MODE
 #define LEDC_DUTY_RES           LEDC_TIMER_10_BIT // 0-1023 range
@@ -82,22 +87,23 @@ static void motor_hw_set_speed_internal(int16_t speed)
             ledc_update_duty(LEDC_MODE, motor_ch2_num);
         }
     }
-    else // Cytron 10C
+    else // Cytron 10C (DIR on Pin 18, PWM on Pin 20)
     {
         if (speed > 0) 
         {
-            gpio_set_level(MOTOR_PIN_2, 0);
+            gpio_set_level(CYTRON_PIN_DIR, 0);
             ledc_set_duty(LEDC_MODE, motor_ch1_num, speed);
             ledc_update_duty(LEDC_MODE, motor_ch1_num);
         } 
         else if (speed < 0) 
         {
-            gpio_set_level(MOTOR_PIN_2, 1);
+            gpio_set_level(CYTRON_PIN_DIR, 1);
             ledc_set_duty(LEDC_MODE, motor_ch1_num, -speed);
             ledc_update_duty(LEDC_MODE, motor_ch1_num);
         } 
         else 
         {
+            gpio_set_level(CYTRON_PIN_DIR, 0);
             ledc_set_duty(LEDC_MODE, motor_ch1_num, 0);
             ledc_update_duty(LEDC_MODE, motor_ch1_num);
         }
@@ -178,40 +184,52 @@ void motor_driver_init(int mode, int freq)
     };
     ledc_timer_config(&ledc_timer);
 
-    ledc_channel_config_t ledc_ch1 = {
-        .speed_mode     = LEDC_MODE,
-        .channel        = motor_ch1_num,
-        .timer_sel      = motor_timer_num,
-        .intr_type      = LEDC_INTR_DISABLE,
-        .gpio_num       = MOTOR_PIN_1,
-        .duty           = 0, 
-        .hpoint         = 0
-    };
-    ledc_channel_config(&ledc_ch1);
-
     if (motor_mode == 0) {
+        ledc_channel_config_t ledc_ch1 = {
+            .speed_mode     = LEDC_MODE,
+            .channel        = motor_ch1_num,
+            .timer_sel      = motor_timer_num,
+            .intr_type      = LEDC_INTR_DISABLE,
+            .gpio_num       = DRV8833_PIN_IN1,
+            .duty           = 0, 
+            .hpoint         = 0
+        };
+        ledc_channel_config(&ledc_ch1);
+
         ledc_channel_config_t ledc_ch2 = {
             .speed_mode     = LEDC_MODE,
             .channel        = motor_ch2_num,
             .timer_sel      = motor_timer_num,
             .intr_type      = LEDC_INTR_DISABLE,
-            .gpio_num       = MOTOR_PIN_2,
+            .gpio_num       = DRV8833_PIN_IN2,
             .duty           = 0, 
             .hpoint         = 0
         };
         ledc_channel_config(&ledc_ch2);
-        ESP_LOGI(TAG, "DRV8833 initialized on PIN1:%d, PIN2:%d at %d Hz", MOTOR_PIN_1, MOTOR_PIN_2, motor_pwm_freq);
+        ESP_LOGI(TAG, "DRV8833 initialized on IN1:%d, IN2:%d at %d Hz", DRV8833_PIN_IN1, DRV8833_PIN_IN2, motor_pwm_freq);
     } else {
+        // Cytron 10C: Pin 18 is PWM, Pin 20 is DIR
+        ledc_channel_config_t ledc_ch1 = {
+            .speed_mode     = LEDC_MODE,
+            .channel        = motor_ch1_num,
+            .timer_sel      = motor_timer_num,
+            .intr_type      = LEDC_INTR_DISABLE,
+            .gpio_num       = CYTRON_PIN_PWM,
+            .duty           = 0, 
+            .hpoint         = 0
+        };
+        ledc_channel_config(&ledc_ch1);
+
         gpio_config_t io_conf = {
-            .pin_bit_mask = (1ULL << MOTOR_PIN_2),
+            .pin_bit_mask = (1ULL << CYTRON_PIN_DIR),
             .mode = GPIO_MODE_OUTPUT,
             .pull_up_en = GPIO_PULLUP_DISABLE,
             .pull_down_en = GPIO_PULLDOWN_DISABLE,
             .intr_type = GPIO_INTR_DISABLE,
         };
         gpio_config(&io_conf);
-        gpio_set_level(MOTOR_PIN_2, 0);
-        ESP_LOGI(TAG, "Cytron 10C initialized on PWM:%d, DIR:%d at %d Hz", MOTOR_PIN_1, MOTOR_PIN_2, motor_pwm_freq);
+        gpio_set_level(CYTRON_PIN_DIR, 0);
+        ESP_LOGI(TAG, "Cytron 10C initialized on PWM:%d, DIR:%d at %d Hz", CYTRON_PIN_PWM, CYTRON_PIN_DIR, motor_pwm_freq);
     }
 
     if (!motor_slew_task_created) {
