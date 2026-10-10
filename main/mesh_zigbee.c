@@ -82,7 +82,7 @@ static bool s_joined = true;
 // Dynamic coordinator MAC (learned via Tri-Layer Discovery)
 static uint8_t s_coordinator_mac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 static bool s_coordinator_known = false;
-static char s_local_node_name[MESH_TEXT_LEN] = "Kitchen";
+static char s_local_node_name[MESH_TEXT_LEN] = "Unassigned";
 
 static void init_local_node_name(void)
 {
@@ -95,26 +95,8 @@ static void init_local_node_name(void)
 
     uint8_t mac[6] = {0};
     if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
-        // Kitchen: B4:3A:45:8A:C6:40
-        // Garage:  B4:3A:45:8A:C7:C0
-        // Santafe: 58:E6:C5:1A:E8:A0
-        // aa:      58:E6:C5:1A:DD:D0
-        // bb:      58:E6:C5:13:6E:EC
-        if (mac[4] == 0xC6 && mac[5] == 0x40) {
-            strncpy(s_local_node_name, "Kitchen", sizeof(s_local_node_name) - 1);
-        } else if (mac[4] == 0xC7 && mac[5] == 0xC0) {
-            strncpy(s_local_node_name, "Garage", sizeof(s_local_node_name) - 1);
-        } else if (mac[4] == 0xE8 && mac[5] == 0xA0) {
-            strncpy(s_local_node_name, "Santafe", sizeof(s_local_node_name) - 1);
-        } else if (mac[4] == 0xDD && mac[5] == 0xD0) {
-            strncpy(s_local_node_name, "aa", sizeof(s_local_node_name) - 1);
-        } else if (mac[4] == 0x6E && mac[5] == 0xEC) {
-            strncpy(s_local_node_name, "bb", sizeof(s_local_node_name) - 1);
-        } else {
-            // Default to Garage if MAC doesn't match Kitchen
-            strncpy(s_local_node_name, "Garage", sizeof(s_local_node_name) - 1);
-        }
-        ESP_LOGI(TAG, "Unprovisioned node: inferred name '%s' from MAC %02X:%02X:%02X:%02X:%02X:%02X",
+        snprintf(s_local_node_name, sizeof(s_local_node_name), "Node_%02X%02X", mac[4], mac[5]);
+        ESP_LOGI(TAG, "Unprovisioned node: default name '%s' from MAC %02X:%02X:%02X:%02X:%02X:%02X",
                  s_local_node_name, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     }
 }
