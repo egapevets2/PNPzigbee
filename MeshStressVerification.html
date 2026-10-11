@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>Mesh Stress & Robustness Verification Plan</title>
+<style>
+body { font-family: 'Arial', sans-serif; color: #000000; line-height: 1.5; font-size: 11pt; max-width: 950px; margin: 30px auto; padding: 20px; }
+h1 { color: #000000; font-size: 22pt; margin-top: 24px; margin-bottom: 8px; font-weight: bold; border-bottom: 2px solid #000000; padding-bottom: 4px; }
+h2 { color: #000000; font-size: 16pt; margin-top: 28px; margin-bottom: 8px; border-bottom: 1px solid #999999; padding-bottom: 4px; }
+h3 { color: #000000; font-size: 13pt; margin-top: 20px; margin-bottom: 6px; }
+h4 { color: #000000; font-size: 11pt; margin-top: 14px; margin-bottom: 4px; font-weight: bold; }
+p { color: #000000; margin: 8px 0; }
+b, strong { color: #000000; font-weight: bold; }
+table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 10pt; color: #000000; }
+th, td { border: 1px solid #777777; padding: 7px 10px; text-align: left; vertical-align: top; color: #000000; }
+th { background-color: #e8e8e8; font-weight: bold; color: #000000; }
+tr:nth-child(even) td { background-color: #f9f9f9; }
+pre { background-color: #f4f4f4; border: 1px solid #cccccc; padding: 12px; font-family: Consolas, Courier, monospace; font-size: 9.5pt; color: #000000; overflow-x: auto; line-height: 1.35; }
+code { font-family: Consolas, Courier, monospace; background-color: #eeeeee; padding: 2px 4px; font-size: 9.5pt; color: #000000; border-radius: 2px; }
+pre code { background-color: transparent; padding: 0; }
+ul, ol { margin: 8px 0; padding-left: 28px; color: #000000; }
+li { margin-bottom: 4px; color: #000000; }
+hr { border: 0; border-top: 1px solid #aaaaaa; margin: 20px 0; }
+</style></head><body>
+<h1>Star Network Stress &amp; Robustness Verification Plan</h1>
+<p><b>Document Version:</b> 2.0  </p>
+<p><b>Target Hardware:</b> ESP32-C6 Unified 6-Node Network (1 Coordinator Hub + 5 End Device Spokes)  </p>
+<p><b>Architecture:</b> Star Topology (Centralized Hub-and-Spoke on ESP-NOW Wireless Substrate)  </p>
+<p><b>Accompanying Tool:</b> <code>MeshStressTest.py</code> (Standalone stress test harness)  </p>
+<p><b>Date:</b> October 11, 2026  </p>
+<hr>
+<h2>1. Executive Summary &amp; Purpose</h2>
+<p>The purpose of this specification is to define comprehensive stress and boundary test methodologies designed to push the unified ESP32-C6 wireless network beyond normal operating conditions.</p>
+<h3>1.1 Architectural Model: Star Topology (Hub-and-Spoke)</h3>
+<p>While the firmware repository leverages ESP-NOW with broadcast fallback mechanics, this project intentionally implements a <b>Star Topology</b>:</p>
+<ul>
+<li><b>All Downlink Traffic:</b> Originates exclusively from the <b>Coordinator (Hub)</b> to an <b>End Device (Spoke)</b>.</li>
+<li><b>All Uplink Traffic:</b> Flows directly from an <b>End Device (Spoke)</b> to the <b>Coordinator (Hub)</b>.</li>
+<li><b>No Peer-to-Peer Multi-Hop Relay:</b> Spokes do not route or forward packets through neighboring spokes.</li>
+</ul>
+<h3>1.2 Engineering Rationale for the Star Topology</h3>
+<p>Deploying all nodes within direct radio reach of a central Coordinator is the optimal engineering choice for this deployment:</p>
+<ol>
+<li><b>Deterministic Low Latency:</b> Single-hop delivery guarantees fast round-trip times (~20–30 ms) with zero intermediate queueing delays or routing re-convergence pauses.</li>
+<li><b>Elimination of Protocol Overhead:</b> Eliminates multi-hop routing protocol chatter (e.g., RPL/AODV route requests, route replies, neighbor discovery floods).</li>
+<li><b>Fault Isolation:</b> Failure or reboot of one spoke cannot cascade or sever connectivity to any other spoke.</li>
+<li><b>ESP-NOW Long Range (LR) Envelope:</b> The ESP32-C6 in Long-Range Mode (<code>LR=1</code>, 20 dBm TX power) easily covers 200–400+ meters line-of-sight and penetrates typical residential/workshop interior walls, eliminating the need for mesh relays.</li>
+<li><b>Direct Link Attribution:</b> LQI and Remote LQI metrics recorded at the Hub represent the exact, unmasked physical link quality to that specific node.</li>
+</ol>
+<h3>1.3 Scope of the Stress Suite</h3>
+<p>While <code>test_runner.py</code> validates peripheral hardware functional correctness (DAC, ADC, GPIO, PWM, Motor, Proximity, Serial Bridge), <b><code>MeshStressTest.py</code></b> evaluates:</p>
+<ul>
+<li>Hub FreeRTOS TX/RX queue backpressure and memory stability under sustained 5-spoke load.</li>
+<li>CSMA/CA air contention and <b>Hidden Terminal</b> collision handling.</li>
+<li>Spoke route table eviction, broadcast fallback, and dynamic reverse-route learning.</li>
+<li>Head-of-line blocking resilience when fast bench spokes and marginal edge spokes are polled concurrently.</li>
+</ul>
+<hr>
+<h2>2. Network Topology &amp; Deployment Architecture</h2>
+<h3>2.1 Physical Node Distribution</h3>
+<table>
+<tr><th>Node Name</th><th>Role</th><th>Channel</th><th>Power Source</th><th>Physical Location</th><th>Expected RF Status</th><th>Host Interface</th></tr>
+<tr><td><b>Coordinator</b></td><td><code>ROLE_COORDINATOR</code> (2)</td><td>1</td><td>USB Host</td><td>Central Hub Location</td><td>N/A (Master Hub)</td><td>Serial (COM11, 115200)</td></tr>
+<tr><td><b>Kitchen</b></td><td><code>ROLE_END_DEVICE</code> (0)</td><td>1</td><td>USB Host / 5V</td><td>Proximate Spoke (~50 cm)</td><td><code>OK</code> (LQI 200–240)</td><td>OTA / Serial (COM5)</td></tr>
+<tr><td><b>Garage</b></td><td><code>ROLE_END_DEVICE</code> (0)</td><td>1</td><td>USB Host / 5V</td><td>Proximate Spoke (~50 cm)</td><td><code>OK</code> (LQI 200–240)</td><td>OTA / Serial (COM8)</td></tr>
+<tr><td><b>N1</b></td><td><code>ROLE_END_DEVICE</code> (0)</td><td>1</td><td>External 5V Wall/Bank</td><td>Mid-Range Spoke</td><td><code>OK</code> / <code>MARGINAL</code> (LQI 100–160)</td><td><b>Pure OTA (No COM)</b></td></tr>
+<tr><td><b>N2</b></td><td><code>ROLE_END_DEVICE</code> (0)</td><td>1</td><td>External 5V Wall/Bank</td><td>Perimeter / Obstacle Spoke</td><td><code>MARGINAL</code> (LQI 50–99)</td><td><b>Pure OTA (No COM)</b></td></tr>
+<tr><td><b>N3</b></td><td><code>ROLE_END_DEVICE</code> (0)</td><td>1</td><td>External 5V Wall/Bank</td><td>Edge-of-Range Spoke</td><td><code>WEAK</code> / <code>MARGINAL</code> (LQI 30–60)</td><td><b>Pure OTA (No COM)</b></td></tr>
+</table>
+<h3>2.2 Hub-and-Spoke Topology Diagram</h3>
+<pre><code>                                    +-----------------------+
+                                    |      Host PC CLI      |
+                                    |  (MeshStressTest.py)  |
+                                    +-----------------------+
+                                                |  USB-UART (COM11)
+                                                v
+                                    +-----------------------+
+                                    |      Coordinator      |
+                                    |     (Central Hub)     |
+                                    +-----------------------+
+                                   /     |     |     |     \
+         +------------------------+      |     |     |      +------------------------+
+         | (Direct Single-Hop)           |     |     |          (Direct Single-Hop)  |
+         | Bench Spoke                   |     |     |          Edge-of-Range Spoke  |
+         | LQI 200-240                   |     |     |          LQI 30-100           |
+         v                               v     |     v                               v
++-----------------+      +-----------------+   |   +-----------------+      +-----------------+
+|     Kitchen     |      |     Garage      |   |   |       N2        |      |       N3        |
+|     (Spoke 1)   |      |     (Spoke 2)   |   |   |     (Spoke 4)   |      |     (Spoke 5)   |
++-----------------+      +-----------------+   |   +-----------------+      +-----------------+
+                                               v
+                                      +-----------------+
+                                      |       N1        |
+                                      |     (Spoke 3)   |
+                                      +-----------------+</code></pre>
+<h3>2.3 Physical Realities &amp; Star Stress Dynamics</h3>
+<ol>
+<li><b>The &quot;Funnel&quot; Effect at the Hub:</b> In a star network, 100% of all uplink traffic converges on the Coordinator&#x27;s single radio receiver. When multiple spokes transmit telemetry or boot announcements at once, they compete directly for the Coordinator&#x27;s receive buffer and FreeRTOS task processing time.</li>
+<li><b>The &quot;Hidden Terminal&quot; Condition:</b> Because <code>Kitchen</code> and <code>N3</code> are on opposite sides of the premises, they may <b>not be able to hear each other</b>. When <code>Kitchen</code> transmits to the Coordinator, <code>N3</code> listens to the air (Clear Channel Assessment - CCA), hears silence, and transmits at the exact same instant—causing an in-air collision at the Coordinator. Testing with edge spokes evaluates how effectively CCA retry backoff resolves hidden terminal collisions.</li>
+<li><b>Head-of-Line Blocking Resilience:</b> When the Coordinator transmits round-robin, slow acknowledgments or retry timeouts to edge spoke <code>N3</code> must never block, delay, or starve rapid communication to proximate bench spokes <code>Kitchen</code> and <code>Garage</code>.</li>
+<li><b>Complete Wireless Autonomy:</b> Spokes <code>N1</code>, <code>N2</code>, and <code>N3</code> operate without USB cables, proving that discovery, short address assignment, reverse-route learning, and over-the-air reboots (<code>N1 reboot</code>) function seamlessly over the air.</li>
+</ol>
+<hr>
+<h2>3. Spoke Provisioning Guide (Nodes N1, N2, and N3)</h2>
+<p>Because of the <b>Single-Binary Unified Architecture</b>, the exact same compiled firmware binary (<code>PNPzigbee.bin</code>) is flashed onto all ESP32-C6 modules. Each spoke&#x27;s role and identity are set in NVS:</p>
+<h3>Step 1: Flashing Unified Binary</h3>
+<p>Connect each new module to PC USB (<code>COMx</code>) and execute:</p>
+<pre><code>cd c:\Users\egape\PNPzigbee
+python -m esptool --chip esp32c6 -p COMx -b 460800 write_flash 0x0 build\bootloader\bootloader.bin 0x8000 build\partition_table\partition-table.bin 0x10000 build\PNPzigbee.bin</code></pre>
+<h3>Step 2: Workbench CLI NVS Configuration</h3>
+<p>Open a serial terminal at 115200 baud, press Enter to enter the <code>mesh-cli&gt;</code> prompt, and configure:</p>
+<p><b>For Node N1:</b></p>
+<pre><code>cfg role 0
+cfg name N1
+cfg channel 1
+cfg power 80
+cfg save</code></pre>
+<p><b>For Node N2:</b></p>
+<pre><code>cfg role 0
+cfg name N2
+cfg channel 1
+cfg power 80
+cfg save</code></pre>
+<p><b>For Node N3:</b></p>
+<pre><code>cfg role 0
+cfg name N3
+cfg channel 1
+cfg power 80
+cfg save</code></pre>
+<h3>Step 3: Deployment</h3>
+<p>Disconnect each board from PC USB, plug into any standard 5V USB wall adapter or battery bank, and place them across the premises:</p>
+<ul>
+<li><b>N1</b>: Moderate distance (room adjacent to bench).</li>
+<li><b>N2</b>: Farther distance (behind walls / obstacles).</li>
+<li><b>N3</b>: Perimeter / fringe of radio coverage.</li>
+</ul>
+<hr>
+<h2>4. Detailed Test Specifications</h2>
+<h3>Stress Test 1: 5-Spoke High-Frequency Traffic Flood &amp; Hub Queue Backpressure</h3>
+<h4>Objective</h4>
+<p>Evaluate Coordinator Hub and spoke performance under sustained high-rate round-robin message injection across all 5 spokes. Verify Hub FreeRTOS TX queue backpressure handling, CSMA/CA channel backoff under 5-way contention, and memory stability when serving both high-LQI and low-LQI spokes simultaneously.</p>
+<h4>Method</h4>
+<ol>
+<li>Configure traffic bursts at rates of 10 Hz, 20 Hz, 50 Hz, and 100 Hz.</li>
+<li>Direct traffic in round-robin sequence across all 5 spokes: <code>Kitchen</code> -&gt; <code>Garage</code> -&gt; <code>N1</code> -&gt; <code>N2</code> -&gt; <code>N3</code> -&gt; <code>Kitchen</code>...</li>
+<li>Transmit burst blocks of 50, 100, and 250 consecutive packets per rate tier.</li>
+<li>Verify that slow ACKs or retries to edge spokes (<code>N3</code>, <code>N2</code>) do not stall the Coordinator&#x27;s TX task or cause head-of-line blocking for proximate spokes (<code>Kitchen</code>, <code>Garage</code>).</li>
+<li>Measure:</li>
+</ol>
+<ul>
+<li>Per-spoke Packet Delivery Ratio (PDR %): <code>(Successful ACKs / Dispatched Packets) * 100</code></li>
+<li>Overall aggregate PDR across all 5 spokes</li>
+<li>Hub queue rejection rate (graceful <code>&quot;error: TX queue full&quot;</code> vs unhandled drops)</li>
+<li>Hub and spoke free heap recovery post-burst</li>
+</ul>
+<h4>Pass/Fail Criteria</h4>
+<ul>
+<li><b>Pass:</b></li>
+<li>Zero task crashes or watchdog resets on Coordinator or any of the 5 spokes.</li>
+<li>Overall PDR <i>&ge; 95\%</i> at 10 Hz; PDR <i>&ge; 85\%</i> at 20 Hz across all 5 spokes.</li>
+<li>Slower ACKs from edge spokes (<code>N3</code>) do not starve or block communication to proximate bench spokes (<code>Kitchen</code>, <code>Garage</code>).</li>
+<li>When the Hub TX queue fills, Coordinator outputs explicit <code>TX queue full</code> rejection and recovers normal throughput within 500 ms of burst cessation.</li>
+</ul>
+<hr>
+<h3>Stress Test 2: Dynamic Spoke Cache Eviction &amp; Broadcast Discovery Fallback</h3>
+<h4>Objective</h4>
+<p>Verify that the Coordinator Hub seamlessly recovers direct communication with all 5 spokes when its internal device table is completely wiped, validating the Layer 3 broadcast discovery fallback mechanism.</p>
+<h4>Method</h4>
+<ol>
+<li>Confirm initial star health with <code>GiveNetworkReport</code> (verifying all 5 spokes are online with valid routes: <code>count == 5</code>).</li>
+<li>Issue <code>ResetNetwork</code> over serial to flush the Coordinator&#x27;s active RAM routing table down to 0 devices (<code>count = 0</code>).</li>
+<li><b>Immediately</b>, without running <code>GiveNetworkReport</code> or manual discovery, dispatch operational commands to all 5 spokes in rapid succession:</li>
+</ol>
+<ul>
+<li><code>Kitchen blink 1</code></li>
+<li><code>Garage blink 1</code></li>
+<li><code>N1 blink 1</code></li>
+<li><code>N2 blink 1</code></li>
+<li><code>N3 blink 1</code></li>
+</ul>
+<ol>
+<li>Monitor Coordinator serial logs for:</li>
+</ol>
+<ul>
+<li>Layer 3 Unicast Miss trigger: Spoke MAC/short address not found in table.</li>
+<li>Broadcast Fallback: Transmission via broadcast short address <code>0xFFFF</code> / broadcast MAC.</li>
+<li>Reverse Route Learning: Automatic insertion of responding spokes into the Coordinator table.</li>
+</ul>
+<ol>
+<li>Verify that all 5 spokes execute the command and the Coordinator table recovers to <code>count == 5</code>.</li>
+</ol>
+<h4>Pass/Fail Criteria</h4>
+<ul>
+<li><b>Pass:</b></li>
+<li>All 5 spokes successfully receive and execute the dispatched commands despite the cold table.</li>
+<li>The Coordinator routing table automatically re-populates all 5 spokes (<code>count == 5</code>) upon receiving replies.</li>
+<li>Zero packet drop on initial dispatch via Layer 3 broadcast fallback.</li>
+</ul>
+<hr>
+<h3>Stress Test 3: RF Boundary &amp; Star Link Budget Asymmetry Survey</h3>
+<h4>Objective</h4>
+<p>Evaluate star link reliability across variable antenna configurations, asymmetric signal strengths, and low LQI boundary conditions across proximate versus edge spokes.</p>
+<h4>Method</h4>
+<ol>
+<li>Query initial baseline LQI and remote LQI across 20 ping cycles via <code>GiveNetworkReport</code>.</li>
+<li>Group spokes into two RF categories:</li>
+</ol>
+<ul>
+<li><b>Proximate Spokes</b> (<code>Kitchen</code>, <code>Garage</code>): Expected LQI <i>&ge; 180</i> (<code>OK</code>).</li>
+<li><b>Edge Spokes</b> (<code>N1</code>, <code>N2</code>, <code>N3</code>): Expected LQI <i>30-150</i> (<code>OK</code>, <code>MARGINAL</code>, <code>WEAK</code>).</li>
+</ul>
+<ol>
+<li>Toggle the hardware RF switch on the Coordinator Hub:</li>
+</ol>
+<ul>
+<li>Ceramic PCB Antenna: <code>rf 0 0</code> (PWR=0, SEL=0)</li>
+<li>External IPEX / Dipole Antenna: <code>rf 0 1</code> (PWR=0, SEL=1)</li>
+</ul>
+<ol>
+<li>For each spoke in both Hub antenna modes:</li>
+</ol>
+<ul>
+<li>Record Coordinator local <code>LQI</code> (uplink quality from spoke to Hub).</li>
+<li>Record Spoke reported <code>REMOTE_LQI</code> (downlink quality from Hub to spoke).</li>
+<li>Calculate Link Asymmetry: <i>&Delta; LQI = |LQI_{local} - LQI_{remote}|</i>.</li>
+<li>Dispatch 25 command cycles to evaluate packet loss correlation with LQI thresholds (<code>OK</code> <i>&ge; 100</i>, <code>MARGINAL</code> <i>50-99</i>, <code>WEAK</code> <i>&lt; 50</i>).</li>
+</ul>
+<h4>Pass/Fail Criteria</h4>
+<ul>
+<li><b>Pass:</b></li>
+<li>Unbroken command dispatch and ACK reception while link status is <code>OK</code> or <code>MARGINAL</code>.</li>
+<li>Edge spokes classified as <code>WEAK</code> (&lt; 50 LQI) maintain <i>&ge; 80\%</i> command success rate via retransmissions.</li>
+<li>RF status classifications in <code>GiveNetworkReport</code> accurately reflect the lower of local and remote LQI.</li>
+<li>No spurious spoke evictions occur due to intermittent low-LQI packets.</li>
+</ul>
+<hr>
+<h3>Stress Test 4: Rapid Spoke Churn &amp; Power Flapping Resilience</h3>
+<h4>Objective</h4>
+<p>Verify that repeated, rapid spoke power cycling and reboots do not cause Hub routing table corruption, duplicate device entries, memory leakage, or short address starvation across 5 spokes.</p>
+<h4>Method</h4>
+<ol>
+<li>Execute an automated loop of 20 rapid reboot cycles across spokes:</li>
+</ol>
+<ul>
+<li><b>Phase A (Single Edge Flapping):</b> Rapid reboot of <code>N3</code> (edge-most spoke) every 2.0 seconds <i>\times 5</i> cycles.</li>
+<li><b>Phase B (Mixed Proximate &amp; Edge Flapping):</b> Alternating rapid reboots of <code>Garage</code> and <code>N2</code> every 2.5 seconds <i>\times 5</i> cycles.</li>
+<li><b>Phase C (Rolling Spoke Churn):</b> Reboot <code>Kitchen</code> -&gt; <code>Garage</code> -&gt; <code>N1</code> -&gt; <code>N2</code> -&gt; <code>N3</code> in 1.5-second sequence.</li>
+</ul>
+<ol>
+<li>Following each reboot:</li>
+</ol>
+<ul>
+<li>Log arrival time of Layer 1 announcement (<code>ANNOUNCE:&lt;name&gt;:&lt;ieee&gt;</code>).</li>
+<li>Verify Hub issues <code>HELLO_ACK</code>.</li>
+<li>Verify assigned 16-bit short address remains consistent or updates cleanly without duplicate table entries.</li>
+</ul>
+<ol>
+<li>At the conclusion of all 20 cycles, verify:</li>
+</ol>
+<ul>
+<li>Routing table count equals exactly 5 (<code>routing_table_get_count() == 5</code>).</li>
+<li>All 5 spokes report <code>online == 1</code> and <code>route == YES</code>.</li>
+<li>FreeRTOS heap memory on Coordinator has not drifted downward from baseline.</li>
+</ul>
+<h4>Pass/Fail Criteria</h4>
+<ul>
+<li><b>Pass:</b></li>
+<li>Coordinator routing table count remains strictly 5 (zero duplicate MACs or phantom entries).</li>
+<li>All rebooted spokes achieve route re-establishment within <i>&lt; 1.5</i> seconds of boot.</li>
+<li>Coordinator heap delta <i>&lt; 150</i> bytes across the entire 20-cycle test (proving zero memory leak).</li>
+</ul>
+<hr>
+<h3>Stress Test 5: 5-Spoke Concurrent Boot Collision &amp; Hidden-Terminal Jitter</h3>
+<h4>Objective</h4>
+<p>Induce maximum air contention by triggering concurrent boots of all 5 spokes simultaneously, verifying that transmission backoff jitter prevents continuous packet collisions at the Hub receiver even under hidden terminal conditions.</p>
+<h4>Method</h4>
+<ol>
+<li>Issue simultaneous reboot commands to all 5 spokes (<code>Kitchen</code>, <code>Garage</code>, <code>N1</code>, <code>N2</code>, <code>N3</code>) within a tight 20 ms window.</li>
+<li>All 5 spokes boot their RF stacks at approximately the same millisecond and attempt to transmit their Layer 1 broadcast announcements (<code>ANNOUNCE</code>).</li>
+<li>Because edge spokes cannot hear bench spokes (hidden terminals), both may transmit simultaneously.</li>
+<li>Monitor Coordinator RX timeline:</li>
+</ol>
+<ul>
+<li>Measure arrival times and packet intervals for all 5 announcements.</li>
+<li>If collisions occur on the air, verify that the Coordinator&#x27;s automatic Layer 2 boot sweep (<code>DISCOVER_ALL</code>) successfully sweeps and recovers any collided spokes.</li>
+</ul>
+<ol>
+<li>Execute 10 iterations of the 5-spoke concurrent boot race.</li>
+</ol>
+<h4>Pass/Fail Criteria</h4>
+<ul>
+<li><b>Pass:</b></li>
+<li>In <i>100\%</i> of iterations, all 5 spokes successfully register in the Coordinator table within <i>&lt; 3.0</i> seconds of boot.</li>
+<li>Zero deadlock or permanent node loss resulting from broadcast packet collisions.</li>
+</ul>
+<hr>
+<h3>Stress Test 6: Long-Duration 5-Spoke Star Soak &amp; Latency Profiling</h3>
+<h4>Objective</h4>
+<p>Subject the entire 6-node Star Network (Hub + 5 Spokes) to continuous background operation over an extended duration (1 to 12 hours) to identify memory leaks, FreeRTOS task degradation, and environmental RF drift across proximate and edge spokes.</p>
+<h4>Method</h4>
+<ol>
+<li>Continuous round-robin ping loop across all 5 spokes: <code>Kitchen</code> -&gt; <code>Garage</code> -&gt; <code>N1</code> -&gt; <code>N2</code> -&gt; <code>N3</code> at 1.0 Hz total aggregate rate.</li>
+<li>Continuous logging of:</li>
+</ol>
+<ul>
+<li>Per-spoke and aggregate RTT latency (min, average, median, 95th percentile, max).</li>
+<li>Local LQI and Remote LQI trends over time for proximate versus edge spokes.</li>
+<li>Cumulative packet count, success count, failure count, and timeout count per spoke.</li>
+<li>Coordinator free heap memory periodically sampled every 60 seconds.</li>
+</ul>
+<ol>
+<li>Configurable test durations:</li>
+</ol>
+<ul>
+<li>Quick Soak: 30 minutes (pre-release sanity check).</li>
+<li>Standard Soak: 2 hours (regression verification).</li>
+<li>Extended Soak: 8–12 hours (overnight stability verification).</li>
+</ul>
+<h4>Pass/Fail Criteria</h4>
+<ul>
+<li><b>Pass:</b></li>
+<li>Aggregate Packet Delivery Ratio (PDR) <i>&ge; 99.0\%</i> across all 5 spokes (proximate <i>&ge; 99.8\%</i>, edge <i>&ge; 98.0\%</i>).</li>
+<li>Free heap slope over time is flat (zero continuous downward drift).</li>
+<li>P95 latency remains <i>&lt; 60\text{ ms}</i> throughout the test duration.</li>
+<li>Zero permanent spoke disconnects; transient link drops on edge spokes recover automatically.</li>
+</ul>
+<hr>
+<h2>5. Architectural Design of <code>MeshStressTest.py</code></h2>
+<h3>Design Principles</h3>
+<ol>
+<li><b>Complete Decoupling:</b> <code>MeshStressTest.py</code> is independent of <code>test_runner.py</code>. It does not require test fixtures (e.g., Trinket M0, DAC, ADC, Schmitt shields) and focuses strictly on star radio protocol mechanics.</li>
+<li><b>Dynamic Spoke Auto-Discovery:</b> Automatically queries <code>GiveNetworkReport</code> on startup to discover all active spokes (supporting 2, 3, 5, or more spokes dynamically), or accepts an explicit spoke list via CLI.</li>
+<li><b>Structured Metrics Logging:</b> Outputs real-time ANSI terminal progress tables and exports structured CSV / JSON run summaries containing latency percentiles, LQI histograms, and PDR statistics.</li>
+</ol>
+<h3>Command-Line Interface Specification</h3>
+<pre><code># Run the entire stress test battery across all discovered spokes (Tests 1 through 5)
+python MeshStressTest.py -p COM11 --all-stress
+
+# Run specific stress tests individually
+python MeshStressTest.py -p COM11 --flood --rate 20 --burst 100
+python MeshStressTest.py -p COM11 --eviction
+python MeshStressTest.py -p COM11 --rf-margin
+python MeshStressTest.py -p COM11 --churn --cycles 20
+python MeshStressTest.py -p COM11 --collision-race --iterations 10
+
+# Explicitly specify spoke names (default: auto-discover from GiveNetworkReport)
+python MeshStressTest.py -p COM11 --all-stress --nodes Kitchen Garage N1 N2 N3
+
+# Run long-duration soak test
+python MeshStressTest.py -p COM11 --soak --duration-min 120 --rate 1.0
+
+# Optional hardware reset COM ports for bench spokes (edge spokes reset purely via OTA)
+python MeshStressTest.py -p COM11 --churn --kitchen-port COM5 --garage-port COM8</code></pre>
+<h3>Module Structure for <code>MeshStressTest.py</code></h3>
+<pre><code>MeshStressTest.py
+├── class MeshCoordinatorClient (Serial engine, async reader, auto-reconnect)
+├── class StressMetricsCollector (Per-spoke latency, PDR, jitter, LQI history, JSON export)
+├── module test_rate_flood (5-spoke round-robin packet injection &amp; backpressure test)
+├── module test_route_eviction (ResetNetwork spoke table cache eviction test)
+├── module test_rf_margin (Proximate vs edge LQI asymmetry &amp; antenna test)
+├── module test_node_churn (Rapid repetitive reboot flapping test across spokes)
+├── module test_collision_race (5-spoke concurrent boot announcement race test)
+└── module test_soak_runner (Long-duration 1-12h soak &amp; stability profiler)</code></pre>
+<hr>
+<h2>6. Summary Matrix &amp; Acceptance Criteria</h2>
+<table>
+<tr><th>Stress Test</th><th>Command Flag</th><th>Nodes Tested</th><th>Duration</th><th>Key Acceptance Metric</th></tr>
+<tr><td><b>1. Rate Flood</b></td><td><code>--flood</code></td><td>All 5 Spokes</td><td>~2–3 min</td><td>Aggregate PDR <i>&ge; 95\%</i> @ 10Hz, queue full gracefully handled</td></tr>
+<tr><td><b>2. Route Eviction</b></td><td><code>--eviction</code></td><td>All 5 Spokes</td><td>~30 sec</td><td>100% command delivery to all 5 spokes via broadcast fallback</td></tr>
+<tr><td><b>3. RF Margin</b></td><td><code>--rf-margin</code></td><td>Proximate vs Edge</td><td>~2 min</td><td>LQI asymmetry tracked, zero drops in OK/MARGINAL zones</td></tr>
+<tr><td><b>4. Spoke Churn</b></td><td><code>--churn</code></td><td>Mixed 5 Spokes</td><td>~4–6 min</td><td>Table count strictly 5, zero duplicate MACs, zero heap leak</td></tr>
+<tr><td><b>5. Collision Race</b></td><td><code>--collision-race</code></td><td>All 5 Spokes</td><td>~3–4 min</td><td>10/10 iterations recover all 5 spokes in <i>&lt; 3.0</i>s</td></tr>
+<tr><td><b>6. Soak Profiling</b></td><td><code>--soak</code></td><td>All 5 Spokes</td><td>30–720 min</td><td>PDR <i>&ge; 99.0\%</i>, P95 RTT <i>&lt; 60</i>ms, flat heap profile</td></tr>
+</table>
+<hr>
+<p>*Next Step: Implementation of <code>MeshStressTest.py</code> based on this Star Topology specification.*</p>
+</body></html>
