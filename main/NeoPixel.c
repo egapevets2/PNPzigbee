@@ -7,19 +7,30 @@
 #include "NeoPixel.h"
 #include "mesh_zigbee.h"
 
-#define MAX_PIXELS 20
+#define MAX_PIXELS 100
+#define DEFAULT_PIXELS 16
 
 static const char *TAG = "NEOPIXEL";
 static uint8_t pixel_ram[MAX_PIXELS][3] = {0};
 static int current_gpio = -1;
+static int current_num_pixels = DEFAULT_PIXELS;
 static led_strip_handle_t led_strip = NULL;
 
-void NeoPixel_SetGPIO(int gpio_num) 
+void NeoPixel_SetGPIO(int gpio_num, int num_pixels) 
 {
-    if (current_gpio == gpio_num) return;
+    if (num_pixels <= 0) {
+        num_pixels = (current_num_pixels > 0) ? current_num_pixels : DEFAULT_PIXELS;
+    }
+    if (num_pixels > MAX_PIXELS) {
+        ESP_LOGW(TAG, "Requested %d pixels exceeds MAX_PIXELS (%d), clamping", num_pixels, MAX_PIXELS);
+        num_pixels = MAX_PIXELS;
+    }
 
-    ESP_LOGI(TAG, "Configuring NeoPixel on GPIO %d", gpio_num);
+    if (current_gpio == gpio_num && current_num_pixels == num_pixels && led_strip != NULL) return;
+
+    ESP_LOGI(TAG, "Configuring NeoPixel on GPIO %d with %d pixels", gpio_num, num_pixels);
     current_gpio = gpio_num;
+    current_num_pixels = num_pixels;
 
     if (led_strip) {
         led_strip_del(led_strip);
@@ -28,7 +39,7 @@ void NeoPixel_SetGPIO(int gpio_num)
 
     led_strip_config_t strip_config = {
         .strip_gpio_num = current_gpio,
-        .max_leds = MAX_PIXELS,
+        .max_leds = current_num_pixels,
         .led_model = LED_MODEL_WS2812,
         .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
         .flags = { .invert_out = false, }
@@ -41,26 +52,38 @@ void NeoPixel_SetGPIO(int gpio_num)
     };
 
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
+    
+    // Clear RAM buffer for active pixels
+    for (int i = 0; i < current_num_pixels; i++) {
+        pixel_ram[i][0] = 0;
+        pixel_ram[i][1] = 0;
+        pixel_ram[i][2] = 0;
+    }
     led_strip_clear(led_strip);
+}
+
+int NeoPixel_GetNumPixels(void)
+{
+    return current_num_pixels;
 }
 
 void NeoPixel_SetRed(int index, int val) 
 {
-    if (index >= 0 && index < MAX_PIXELS) {
+    if (index >= 0 && index < current_num_pixels) {
         pixel_ram[index][0] = (val > 255) ? 255 : (val < 0 ? 0 : val);
     }
 }
 
 void NeoPixel_SetGreen(int index, int val) 
 {
-    if (index >= 0 && index < MAX_PIXELS) {
+    if (index >= 0 && index < current_num_pixels) {
         pixel_ram[index][1] = (val > 255) ? 255 : (val < 0 ? 0 : val);
     }
 }
 
 void NeoPixel_SetBlue(int index, int val) 
 {
-    if (index >= 0 && index < MAX_PIXELS) {
+    if (index >= 0 && index < current_num_pixels) {
         pixel_ram[index][2] = (val > 255) ? 255 : (val < 0 ? 0 : val);
     }
 }
@@ -72,12 +95,12 @@ void NeoPixel_Update(void)
         return;
     }
 
-    for (int i = 0; i < MAX_PIXELS; i++) {
+    for (int i = 0; i < current_num_pixels; i++) {
         led_strip_set_pixel(led_strip, i, pixel_ram[i][0], pixel_ram[i][1], pixel_ram[i][2]);
     }
     
     led_strip_refresh(led_strip);
-    ESP_LOGI(TAG, "NeoPixels physical strip updated from RAM");
+    ESP_LOGI(TAG, "NeoPixels physical strip updated from RAM (%d pixels)", current_num_pixels);
 }
 
 bool neopixel_is_cmd(const char *cmd)
@@ -91,7 +114,8 @@ bool neopixel_is_cmd(const char *cmd)
 bool neopixel_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool text_message)
 {
     if (strcmp(cmd, "NeoGPIO") == 0) {
-        NeoPixel_SetGPIO(value);
+        int pixels = (value2 > 0) ? value2 : DEFAULT_PIXELS;
+        NeoPixel_SetGPIO(value, pixels);
         if (!text_message) mesh_zigbee_send_text("GOT NEOGPIO OK");
         return true;
     } else if (strcmp(cmd, "NeoRED") == 0) {

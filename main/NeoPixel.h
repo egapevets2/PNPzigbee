@@ -8,7 +8,8 @@
 extern "C" {
 #endif
 
-void NeoPixel_SetGPIO(int gpio_num);
+void NeoPixel_SetGPIO(int gpio_num, int num_pixels);
+int NeoPixel_GetNumPixels(void);
 void NeoPixel_SetRed(int index, int val);
 void NeoPixel_SetGreen(int index, int val);
 void NeoPixel_SetBlue(int index, int val);

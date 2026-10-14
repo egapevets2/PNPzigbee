@@ -489,7 +489,7 @@ All commands can be sent as raw Zigbee APS text payloads, ZCL strings, or typed 
 ### 7.5 NeoPixel (Addressable RGB)
 | Command | Parameters | Description | Response / Event |
 | :--- | :--- | :--- | :--- |
-| `NeoGPIO` | `<gpio>` | Assign output pin and initialize LED strip | `GOT NEOGPIO OK` |
+| `NeoGPIO` | `<gpio> [count]` | Assign output pin and initialize LED strip with configurable pixel count (e.g. `NeoGPIO 19 7`, default 16) | `GOT NEOGPIO OK` |
 | `NeoRED` | `<index> <val>` | Set red component (0–255) for pixel index in buffer | `GOT NEORED OK` |
 | `NeoGREEN`| `<index> <val>` | Set green component (0–255) for pixel index in buffer | `GOT NEOGREEN OK` |
 | `NeoBLUE` | `<index> <val>` | Set blue component (0–255) for pixel index in buffer | `GOT NEOBLUE OK` |
