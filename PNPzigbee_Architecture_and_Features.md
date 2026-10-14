@@ -51,6 +51,7 @@ flowchart TD
         PARSER --> GPIO_OUT["GPIO_handler (Digital Out)"]
         PARSER --> LED["light_driver (Status LED)"]
         PARSER --> EXP8["Expand8 (PCF8574 8-Bit I/O Expander)"]
+        PARSER --> SSD1306["SSD1306 (128x64 OLED Display)"]
     end
 
     subgraph Sensor_Subsystems ["Sensor & Telemetry Subsystems"]
@@ -67,6 +68,7 @@ flowchart TD
     STEPPER --> LEDC_MGR
 
     EXP8 --> I2C_MGR
+    SSD1306 --> I2C_MGR
     VL53 --> I2C_MGR
     APDS --> I2C_MGR
     I2C_RAW --> I2C_MGR
@@ -202,7 +204,7 @@ The ESP32-C6 features **6 LEDC PWM channels** and **4 hardware timers** in low-s
 
 ### 4.2 Shared I2C Bus Subsystem (`i2c_manager`)
 
-The ESP32-C6 star network spoke nodes feature a centralized, thread-safe I2C subsystem managed by [`i2c_manager.c`](file:///c:/Users/egape/PNPzigbee/main/i2c_manager.c) and [`i2c_manager.h`](file:///c:/Users/egape/PNPzigbee/main/i2c_manager.h). Designed for multi-peripheral flexibility and industrial resilience, it hosts distance sensors, optical proximity detectors, I/O expanders, and direct bus debug utilities across a single physical 2-wire interface.
+The ESP32-C6 star network spoke nodes feature a centralized, thread-safe I2C subsystem managed by [`i2c_manager.c`](file:///c:/Users/egape/PNPzigbee/main/i2c_manager.c) and [`i2c_manager.h`](file:///c:/Users/egape/PNPzigbee/main/i2c_manager.h). Designed for multi-peripheral flexibility and industrial resilience, it hosts distance sensors, optical proximity detectors, I/O expanders, OLED displays, and direct bus debug utilities across a single physical 2-wire interface.
 
 ```mermaid
 flowchart TD
@@ -216,6 +218,7 @@ flowchart TD
         DEV_EXP["Expand8 (PCF8574)\nAddr: 0x20 (32)"]
         DEV_APDS["APDS-9930 Proximity\nAddr: 0x39 (57)"]
         DEV_VL["VL53L1X Distance\nAddr: 0x29 (41)"]
+        DEV_OLED["SSD1306 OLED (128x64)\nAddr: 0x3C (60)"]
         DEV_RAW["I2Craw Dynamic Handle\nAddr: User Configured"]
     end
 
@@ -224,6 +227,7 @@ flowchart TD
     MUTEX --> DEV_EXP
     MUTEX --> DEV_APDS
     MUTEX --> DEV_VL
+    MUTEX --> DEV_OLED
     MUTEX --> DEV_RAW
 ```
 
@@ -235,6 +239,7 @@ A core architectural requirement of PNPzigbee is maximum hardware versatility: t
   - `SetupExpand8 [addr]` initializes the bus and attaches the PCF8574 handle.
   - `SetupProximity` initializes the bus and attaches the APDS-9930 handle.
   - `SetupVL` initializes the bus and attaches the VL53L1X handle.
+  - `SetupDisp [addr]` / `ClearDisp` / `print <size> <text>` initializes the bus and attaches the SSD1306 OLED handle.
   - `rawI2CchipADR <addr>` initializes the bus and attaches the dynamic raw access handle.
 - **Pin Reclamation (`i2c_manager_deinit_bus`):** When all I2C operations are completed, calling `i2c_manager_deinit_bus()` tears down the master bus handle and resets both GPIO 22 and 23 via `gpio_reset_pin()`, returning them to high-impedance general-purpose inputs.
 
@@ -261,6 +266,7 @@ The shared bus accommodates standard 7-bit peripheral addresses:
 | :--- | :--- | :--- | :--- | :--- |
 | **VL53L1X** | Time-of-Flight Distance | `0x29` | 41 | `SetupVL` |
 | **APDS-9930** | Optical Proximity / ALS | `0x39` | 57 | `SetupProximity` |
+| **SSD1306** | 128x64 Monochrome OLED Display | `0x3C` | 60 | `SetupDisp [addr]` / `ClearDisp` / `print` |
 | **PCF8574** | 8-Bit I/O Port Expander | `0x20` – `0x27` | 32 – 39 | `SetupExpand8 [addr]` (Default: `32` / `0x20`) |
 | **PCF8574A** | 8-Bit I/O Expander (Variant) | `0x38` – `0x3F` | 56 – 63 | `SetupExpand8 [addr]` |
 | **I2Craw** | Direct Register Debugger | Dynamic (`0x08`–`0x77`) | Dynamic | `rawI2CchipADR <addr>` |
@@ -273,7 +279,7 @@ The shared bus accommodates standard 7-bit peripheral addresses:
 
 #### 4.2.5 Transaction Timeouts & System Fault Resilience
 To protect the node from hanging due to a disconnected sensor, missing pull-up resistor, or slave clock-stretching lockup:
-- **Strict Bounded Timeouts:** All I2C peripheral drivers ([`Expand8.c`](file:///c:/Users/egape/PNPzigbee/main/Expand8.c), [`apds9930.c`](file:///c:/Users/egape/PNPzigbee/main/apds9930.c), [`VL53L1X.c`](file:///c:/Users/egape/PNPzigbee/main/VL53L1X.c), and [`I2Craw.c`](file:///c:/Users/egape/PNPzigbee/main/I2Craw.c)) utilize a bounded timeout of `pdMS_TO_TICKS(100)` (100 ms).
+- **Strict Bounded Timeouts:** All I2C peripheral drivers ([`Expand8.c`](file:///c:/Users/egape/PNPzigbee/main/Expand8.c), [`ssd1306.c`](file:///c:/Users/egape/PNPzigbee/main/ssd1306.c), [`apds9930.c`](file:///c:/Users/egape/PNPzigbee/main/apds9930.c), [`VL53L1X.c`](file:///c:/Users/egape/PNPzigbee/main/VL53L1X.c), and [`I2Craw.c`](file:///c:/Users/egape/PNPzigbee/main/I2Craw.c)) utilize a bounded timeout of `pdMS_TO_TICKS(100)` (100 ms).
 - **Elimination of Unbounded Waits:** Unbounded `-1` (`portMAX_DELAY`) timeouts have been completely removed. Any transaction encountering bus stall conditions aborts cleanly within 100 ms, logs an error, and returns an error response upstream without starving the FreeRTOS scheduler or delaying adjacent peripherals.
 
 ---
@@ -350,6 +356,25 @@ Provides 4 general-purpose PWM channels (1–4):
 - **Register Operations:**
   - `rawI2Cwr <reg> <val>`: Transmits 1-byte value to 1-byte register address.
   - `rawI2Crd <reg>`: Transmits register address and receives 1-byte value, returning `I2Cval <reg> <val>`.
+
+#### 7. 128x64 Monochrome OLED Display (`SSD1306`)
+- **Silicon Architecture & Framebuffer:** 128x64 monochrome OLED display driven over the shared I2C bus (`0x3C` / 60). Configured in horizontal addressing mode (`0x20, 0x00`) with internal charge pump power enabled (`0x8D, 0x14`). Maintains an internal 1024-byte RAM framebuffer flushed atomically to the display via `i2c_master_transmit`.
+- **Adafruit GFX FreeMono Font Engine:** Features a full bit-unpacking glyph renderer utilizing genuine Adafruit GFX font tables stored in flash memory:
+  - `FreeMono9pt7b`: Baseline offset 12px, line advance 18px (~11 chars/line, up to 3 lines).
+  - `FreeMono12pt7b`: Baseline offset 16px, line advance 24px (~9 chars/line, up to 2 lines).
+  - `FreeMono18pt7b`: Baseline offset 24px, line advance 35px (~6 chars/line).
+  - `FreeMono24pt7b`: Baseline offset 32px, line advance 47px (~4 chars/line, large banner text).
+- **Line Advancement & Auto-Wrapping:**
+  - Maintains a persistent vertical cursor coordinate (`s_cursor_y`).
+  - Clears the horizontal band (`ssd1306_fill_rect`) across the entire 128-pixel display width before rendering the new line, eliminating visual artifacts from prior text.
+  - Computes baseline positioning from the top of the line strip, ensuring glyph ascenders are never clipped at the top of the screen.
+  - Increments `s_cursor_y` by the font's `yAdvance` upon successful rendering.
+  - When the next line exceeds the 64-pixel display height (`s_cursor_y + yAdvance > 64`), the cursor automatically wraps back to the top (`s_cursor_y = 0`).
+- **Commands & Telemetry:**
+  - `ClearDisp`: Clears the display to black, zeroes the framebuffer, and resets the line cursor to line 0 (top of screen). Returns `CLEARDISP OK` or `CLEARDISP FAIL`.
+  - `print <size> <string>`: Prints arbitrary text string (supports spaces) at specified point size (9, 12, 18, 24; defaults to 12) on current line and advances cursor. Returns `PRINT OK` or `PRINT FAIL`.
+  - `SetupDisp [addr]` / `SetupSSD1306 [addr]`: Explicitly creates the shared I2C bus and initializes the SSD1306 hardware at specified 7-bit address (default: `0x3C` / 60). Returns `SETUP DISP OK` or `SETUP DISP FAIL`.
+  - Responses suppress generic `[ACK]` frames to optimize wireless bandwidth.
 
 ---
 
@@ -454,7 +479,7 @@ All commands can be sent as raw Zigbee APS text payloads, ZCL strings, or typed 
 | `SetGPIOval` | `<gpio> <val>` | Set digital output level (0 or 1) | `GOT SETGPIO OK` |
 | `ReadGPIO` | `<gpio>` | Query digital input level | `GPIO <pin> IS <0\|1>` |
 
-### 7.7 I2C Peripherals: Distance, Proximity, I/O Expander & Raw Bus Access
+### 7.7 I2C Peripherals: Distance, Proximity, I/O Expander, OLED Display & Raw Bus Access
 | Command | Parameters | Description | Response / Event |
 | :--- | :--- | :--- | :--- |
 | `SetupExpand8` | `[addr]` | Initialize PCF8574 I/O expander (defaults to address 32 / `0x20`) | `SETUP EXPAND8 OK` / `FAIL` |
@@ -464,6 +489,9 @@ All commands can be sent as raw Zigbee APS text payloads, ZCL strings, or typed 
 | `clrExpand8` | `<bit>` | Clear bit 0–7 LOW (0) | `EXPAND8 WR OK` |
 | `wrExpand8byte` | `<byte>` | Atomic 8-bit port write (0–255) | `EXPAND8 WR OK` / `FAIL` |
 | `rdExpand8byte` | *none* | Read full 8-bit port state | `EXPAND8 BYTE 0x<HEX>` |
+| `ClearDisp` | *none* | Clear SSD1306 display & reset line cursor to top | `CLEARDISP OK` / `CLEARDISP FAIL` |
+| `print` | `<size> <text>` | Render text in FreeMono (size: 9, 12, 18, 24) and advance line | `PRINT OK` / `PRINT FAIL` |
+| `SetupDisp`, `SetupSSD1306` | `[addr]` | Initialize SSD1306 OLED display (default: 60 / `0x3C`) | `SETUP DISP OK` / `SETUP DISP FAIL` |
 | `SetupVL` | *none* | Init VL53L1X ToF sensor & start distance task | `SETUP VL OK` / `FAIL` |
 | `StreamVL` | `<0\|1>` | Enable/disable live distance streaming | `VL STREAM ON/OFF` |
 | `VLUpperThresh` | `<mm>` | Set distance upper alert threshold | `GOT VLUPPERTHRESH OK` |

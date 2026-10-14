@@ -30,6 +30,7 @@
 #include "VL53L1X.h"
 #include "I2Craw.h"
 #include "Expand8.h"
+#include "ssd1306.h"
 #include "nvs_config.h"
 #include "serial_gateway.h"
 
@@ -48,9 +49,10 @@ static void strip_line_endings(char *s)
     }
 }
 
-static bool parse_text_for_local_action(const char *line, char *cmd, size_t cmd_len, int16_t *value1, int16_t *value2)
+static bool parse_text_for_local_action(const char *line, char *cmd, size_t cmd_len, int16_t *value1, int16_t *value2, char *str_arg, size_t str_len)
 {
     if (!line || !cmd || cmd_len == 0 || !value1 || !value2) return false;
+    if (str_arg && str_len > 0) str_arg[0] = '\0';
 
     char first[MESH_TEXT_LEN] = {0};
     char second[MESH_TEXT_LEN] = {0};
@@ -78,7 +80,8 @@ static bool parse_text_for_local_action(const char *line, char *cmd, size_t cmd_
         proximity_is_cmd(first)    ||
         vl53l1x_is_cmd(first)      ||
         I2Craw_is_cmd(first)       ||
-        expand8_is_cmd(first))
+        expand8_is_cmd(first)      ||
+        ssd1306_is_cmd(first))
     {
         strncpy(cmd, first, cmd_len - 1);
         if (fields >= 2) *value1 = (int16_t)atoi(second);
@@ -97,6 +100,32 @@ static bool parse_text_for_local_action(const char *line, char *cmd, size_t cmd_
     }
 
     cmd[cmd_len - 1] = '\0';
+
+    // Extract optional trailing string argument
+    if (str_arg && str_len > 0) {
+        const char *cmd_pos = strstr(line, cmd);
+        if (cmd_pos) {
+            const char *p = cmd_pos + strlen(cmd);
+            while (*p == ' ') p++;
+            // If the next token is numeric, parse it into value1 and advance past it
+            char *endp = NULL;
+            long val = strtol(p, &endp, 10);
+            if (endp != p) {
+                *value1 = (int16_t)val;
+                p = endp;
+                while (*p == ' ') p++;
+            }
+            strncpy(str_arg, p, str_len - 1);
+            str_arg[str_len - 1] = '\0';
+            // Strip trailing newlines
+            size_t slen = strlen(str_arg);
+            while (slen > 0 && (str_arg[slen - 1] == '\r' || str_arg[slen - 1] == '\n')) {
+                str_arg[slen - 1] = '\0';
+                slen--;
+            }
+        }
+    }
+
     return true;
 }
 
@@ -257,6 +286,7 @@ static void app_msg_task(void *arg)
         if (mesh_zigbee_receive(&msg, portMAX_DELAY))
         {
             bool text_message = (msg.text[0] != '\0');
+            char text_arg[MESH_LINE_LEN] = {0};
 
             if (text_message)
             {
@@ -274,7 +304,7 @@ static void app_msg_task(void *arg)
                 int16_t text_value1 = 0;
                 int16_t text_value2 = 0;
 
-                if (parse_text_for_local_action(msg.text, text_cmd, sizeof(text_cmd), &text_value1, &text_value2)) {
+                if (parse_text_for_local_action(msg.text, text_cmd, sizeof(text_cmd), &text_value1, &text_value2, text_arg, sizeof(text_arg))) {
                     strncpy(msg.cmd, text_cmd, sizeof(msg.cmd) - 1);
                     msg.value = text_value1;
                     msg.value2 = text_value2;
@@ -282,13 +312,16 @@ static void app_msg_task(void *arg)
                     continue;
                 }
 
-                // If the command is ping, setDAC, setx, clrx, SetupSerialBridge, rdExpand8, rdExpand8byte, or SetupExpand8, the dedicated response is sent separately!
+                // If the command is ping, setDAC, setx, clrx, SetupSerialBridge, rdExpand8, rdExpand8byte, SetupExpand8,
+                // ClearDisp, print, SetupDisp, or SetupSSD1306, the dedicated response is sent separately!
                 // Do NOT send an ACK here so it doesn't conflict or duplicate the reply.
                 if (strcasecmp(msg.cmd, "ping") != 0 && strcasecmp(msg.cmd, "pingx") != 0 &&
                     strcasecmp(msg.cmd, "setDAC") != 0 && strcasecmp(msg.cmd, "SetupSerialBridge") != 0 &&
                     strcasecmp(msg.cmd, "setx") != 0 && strcasecmp(msg.cmd, "clrx") != 0 &&
                     strcasecmp(msg.cmd, "rdExpand8") != 0 && strcasecmp(msg.cmd, "rdExpand8byte") != 0 &&
-                    strcasecmp(msg.cmd, "SetupExpand8") != 0) {
+                    strcasecmp(msg.cmd, "SetupExpand8") != 0 &&
+                    strcasecmp(msg.cmd, "ClearDisp") != 0 && strcasecmp(msg.cmd, "print") != 0 &&
+                    strcasecmp(msg.cmd, "SetupDisp") != 0 && strcasecmp(msg.cmd, "SetupSSD1306") != 0) {
                     if (strcmp(msg.text, "ACK") != 0 && msg.source[0] != '\0') {
                         mesh_zigbee_send_text("ACK");
                     }
@@ -338,6 +371,7 @@ static void app_msg_task(void *arg)
             else if (vl53l1x_is_cmd(msg.cmd))      vl53l1x_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             else if (I2Craw_is_cmd(msg.cmd))       I2Craw_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             else if (expand8_is_cmd(msg.cmd))      expand8_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
+            else if (ssd1306_is_cmd(msg.cmd))      ssd1306_execute_cmd(msg.cmd, msg.value, text_arg, text_message);
             // ----------------------
             else {
                 if (!text_message) mesh_zigbee_send_text("INVALID");
