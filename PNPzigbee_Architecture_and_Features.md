@@ -57,6 +57,7 @@ flowchart TD
     subgraph Sensor_Subsystems ["Sensor & Telemetry Subsystems"]
         PARSER --> VL53["VL53L1X ToF Distance"]
         PARSER --> APDS["APDS-9930 Proximity"]
+        PARSER --> COMPASS["QMC5883L 3-Axis Magnetometer"]
         PARSER --> ADC_DRV["ADC (A0, A1, A2 + Hysteresis)"]
         PARSER --> GPIO_IN["GPIO_handler (Input Change Detect)"]
         PARSER --> I2C_RAW["I2Craw (Direct Register Access)"]
@@ -69,6 +70,7 @@ flowchart TD
 
     EXP8 --> I2C_MGR
     SSD1306 --> I2C_MGR
+    COMPASS --> I2C_MGR
     VL53 --> I2C_MGR
     APDS --> I2C_MGR
     I2C_RAW --> I2C_MGR
@@ -77,6 +79,7 @@ flowchart TD
 
     VL53 -.-> |Threshold / Stream| UQ
     APDS -.-> |Threshold / Stream| UQ
+    COMPASS -.-> |Field Telemetry| UQ
     ADC_DRV -.-> |State Change Event| UQ
     GPIO_IN -.-> |Pin Change Event| UQ
 ```
@@ -217,6 +220,7 @@ flowchart TD
     subgraph Peripherals ["Attached I2C Device Handles"]
         DEV_EXP["Expand8 (PCF8574)\nAddr: 0x20 (32)"]
         DEV_APDS["APDS-9930 Proximity\nAddr: 0x39 (57)"]
+        DEV_COMPASS["QMC5883L Compass\nAddr: 0x0D (13)"]
         DEV_VL["VL53L1X Distance\nAddr: 0x29 (41)"]
         DEV_OLED["SSD1306 OLED (128x64)\nAddr: 0x3C (60)"]
         DEV_RAW["I2Craw Dynamic Handle\nAddr: User Configured"]
@@ -226,6 +230,7 @@ flowchart TD
     BUS --> MUTEX
     MUTEX --> DEV_EXP
     MUTEX --> DEV_APDS
+    MUTEX --> DEV_COMPASS
     MUTEX --> DEV_VL
     MUTEX --> DEV_OLED
     MUTEX --> DEV_RAW
@@ -234,10 +239,11 @@ flowchart TD
 #### 4.2.1 On-Demand Bus Lifecycle & "Zero-I2C Application" Architecture
 A core architectural requirement of PNPzigbee is maximum hardware versatility: the firmware must gracefully support custom applications that require **zero I2C devices**.
 - **Boot-Time Pin Isolation:** At system boot, SCL (`GPIO 23`) and SDA (`GPIO 22`) remain standard unconfigured GPIOs. No I2C driver is created during boot. If an application never uses I2C, both pins remain 100% free for standard digital I/O, PWM channels, or external signaling.
-- **Elimination of Implicit / Lazy Initialization:** Earlier firmware architectures lazily initialized the I2C bus whenever any peripheral read or write command was received. This behavior was eliminated. If a user or script issues a command to an uninitialized device (e.g., `Kitchen rdExpand8 0` or `ReadProx`), the driver gracefully rejects the command with an error message (`EXPAND8 NOT READY`, `PROX NOT READY`, or `ERR: NO I2C ADR SET`) and **leaves the GPIO pins completely untouched**.
+- **Elimination of Implicit / Lazy Initialization:** Earlier firmware architectures lazily initialized the I2C bus whenever any peripheral read or write command was received. This behavior was eliminated. If a user or script issues a command to an uninitialized device (e.g., `Kitchen rdExpand8 0`, `ReadProx`, or `GetCompass`), the driver gracefully rejects the command with an error message (`EXPAND8 NOT READY`, `PROX NOT READY`, `COMPASS NOT READY`, or `ERR: NO I2C ADR SET`) and **leaves the GPIO pins completely untouched**.
 - **Explicit On-Demand Allocation:** The shared bus is created *only* when an explicit peripheral setup command is executed:
   - `SetupExpand8 [addr]` initializes the bus and attaches the PCF8574 handle.
   - `SetupProximity` initializes the bus and attaches the APDS-9930 handle.
+  - `SetupCompass [addr]` initializes the bus and attaches the QMC5883L handle.
   - `SetupVL` initializes the bus and attaches the VL53L1X handle.
   - `SetupDisp [addr]` / `ClearDisp` / `print <size> <text>` initializes the bus and attaches the SSD1306 OLED handle.
   - `rawI2CchipADR <addr>` initializes the bus and attaches the dynamic raw access handle.
@@ -264,6 +270,7 @@ The shared bus accommodates standard 7-bit peripheral addresses:
 
 | Peripheral Device | Target Function | 7-Bit Address (Hex) | Address (Dec) | Configuration Command |
 | :--- | :--- | :--- | :--- | :--- |
+| **QMC5883L** | 3-Axis Digital Compass / Magnetometer | `0x0D` | 13 | `SetupCompass [addr]` (Default: `13` / `0x0D`) |
 | **VL53L1X** | Time-of-Flight Distance | `0x29` | 41 | `SetupVL` |
 | **APDS-9930** | Optical Proximity / ALS | `0x39` | 57 | `SetupProximity` |
 | **SSD1306** | 128x64 Monochrome OLED Display | `0x3C` | 60 | `SetupDisp [addr]` / `ClearDisp` / `print` |
@@ -279,7 +286,7 @@ The shared bus accommodates standard 7-bit peripheral addresses:
 
 #### 4.2.5 Transaction Timeouts & System Fault Resilience
 To protect the node from hanging due to a disconnected sensor, missing pull-up resistor, or slave clock-stretching lockup:
-- **Strict Bounded Timeouts:** All I2C peripheral drivers ([`Expand8.c`](file:///c:/Users/egape/PNPzigbee/main/Expand8.c), [`ssd1306.c`](file:///c:/Users/egape/PNPzigbee/main/ssd1306.c), [`apds9930.c`](file:///c:/Users/egape/PNPzigbee/main/apds9930.c), [`VL53L1X.c`](file:///c:/Users/egape/PNPzigbee/main/VL53L1X.c), and [`I2Craw.c`](file:///c:/Users/egape/PNPzigbee/main/I2Craw.c)) utilize a bounded timeout of `pdMS_TO_TICKS(100)` (100 ms).
+- **Strict Bounded Timeouts:** All I2C peripheral drivers ([`Expand8.c`](file:///c:/Users/egape/PNPzigbee/main/Expand8.c), [`ssd1306.c`](file:///c:/Users/egape/PNPzigbee/main/ssd1306.c), [`Compass.c`](file:///c:/Users/egape/PNPzigbee/main/Compass.c), [`apds9930.c`](file:///c:/Users/egape/PNPzigbee/main/apds9930.c), [`VL53L1X.c`](file:///c:/Users/egape/PNPzigbee/main/VL53L1X.c), and [`I2Craw.c`](file:///c:/Users/egape/PNPzigbee/main/I2Craw.c)) utilize a bounded timeout of `pdMS_TO_TICKS(100)` (100 ms).
 - **Elimination of Unbounded Waits:** Unbounded `-1` (`portMAX_DELAY`) timeouts have been completely removed. Any transaction encountering bus stall conditions aborts cleanly within 100 ms, logs an error, and returns an error response upstream without starving the FreeRTOS scheduler or delaying adjacent peripherals.
 
 ---
@@ -375,6 +382,28 @@ Provides 4 general-purpose PWM channels (1–4):
   - `print <size> <string>`: Prints arbitrary text string (supports spaces) at specified point size (9, 12, 18, 24; defaults to 12) on current line and advances cursor. Returns `PRINT OK` or `PRINT FAIL`.
   - `SetupDisp [addr]` / `SetupSSD1306 [addr]`: Explicitly creates the shared I2C bus and initializes the SSD1306 hardware at specified 7-bit address (default: `0x3C` / 60). Returns `SETUP DISP OK` or `SETUP DISP FAIL`.
   - Responses suppress generic `[ACK]` frames to optimize wireless bandwidth.
+
+#### 8. 3-Axis Digital Compass & Magnetometer (`QMC5883L`)
+- **Silicon Architecture & Distinction:** High-precision 3-axis magnetic sensor communicating over the shared I2C bus at fixed 7-bit slave address `0x0D` (13 decimal).
+  > [!NOTE]
+  > The QMC5883L is an upgraded silicon design distinct from the legacy Honeywell HMC5883L (`0x1E`). It features higher resolution, lower power consumption, and a completely different internal register architecture.
+- **Hardware Configuration Sequence:**
+  1. **Software Reset:** Issues soft reset command by setting bit 7 (`0x80`) of Control Register 2 (`0x0A`), followed by a 15 ms settling delay.
+  2. **Set/Reset Period Configuration:** Writes `0x01` to Register `0x0B` (mandatory per QMC5883L datasheet specification to charge internal magnetic set/reset coils).
+  3. **Continuous Measurement Mode:** Configures Control Register 1 (`0x09`) with `0x1D`:
+     - **Mode:** Continuous measurement mode (`0x01`).
+     - **Output Data Rate (ODR):** 200 Hz (`0x0C` field mask).
+     - **Full Scale Range:** ±8 Gauss (`0x00` field mask, sensitivity ~3000 LSB/Gauss).
+     - **Over-Sampling Ratio (OSR):** 512 samples (`0x00` field mask).
+  4. **Pointer Roll-Over:** Configures Control Register 2 (`0x0A`) with `0x40` to enable automatic register pointer roll-over across 6-byte bursts.
+- **Data Acquisition & Vector Readout:**
+  - Performs a single 6-byte burst read starting at output register `0x00` (`[X_LSB, X_MSB, Y_LSB, Y_MSB, Z_LSB, Z_MSB]`).
+  - Reconstructs signed 16-bit 2's complement vector components: $X, Y, Z$.
+  - In 2D plane navigation, magnetic azimuth heading angle is computed via $\theta = \operatorname{atan2}(Y, X) \times \frac{180}{\pi} \pmod{360^\circ}$.
+- **Commands & Telemetry:**
+  - `SetupCompass [addr]`: Initializes the shared I2C bus and configures the QMC5883L (default address `13` / `0x0D`). Returns `SETUP COMPASS OK` or `SETUP COMPASS FAIL`.
+  - `GetCompass` / `ReadCompass`: Reads instantaneous magnetic field vector and returns `COMPASS <x> <y> <z>` (e.g. `COMPASS -531 -282 -317`) in raw LSB units, or `COMPASS NOT READY` if uninitialized.
+  - Telemetry frames automatically suppress generic `[ACK]` packets across the wireless mesh.
 
 ---
 
@@ -479,9 +508,11 @@ All commands can be sent as raw Zigbee APS text payloads, ZCL strings, or typed 
 | `SetGPIOval` | `<gpio> <val>` | Set digital output level (0 or 1) | `GOT SETGPIO OK` |
 | `ReadGPIO` | `<gpio>` | Query digital input level | `GPIO <pin> IS <0\|1>` |
 
-### 7.7 I2C Peripherals: Distance, Proximity, I/O Expander, OLED Display & Raw Bus Access
+### 7.7 I2C Peripherals: Distance, Proximity, I/O Expander, OLED Display, 3-Axis Compass & Raw Bus Access
 | Command | Parameters | Description | Response / Event |
 | :--- | :--- | :--- | :--- |
+| `SetupCompass` | `[addr]` | Initialize QMC5883L 3-axis compass (default: 13 / `0x0D`) | `SETUP COMPASS OK` / `SETUP COMPASS FAIL` |
+| `GetCompass`, `ReadCompass` | *none* | Read instantaneous 3-axis magnetic field vector (X, Y, Z) | `COMPASS <x> <y> <z>` / `COMPASS NOT READY` |
 | `SetupExpand8` | `[addr]` | Initialize PCF8574 I/O expander (defaults to address 32 / `0x20`) | `SETUP EXPAND8 OK` / `FAIL` |
 | `wrExpand8` | `<bit> [val]` | Write bit 0–7 (val: 0 or 1, default 1) | `EXPAND8 WR OK` / `FAIL` |
 | `rdExpand8` | `<bit>` | Read individual bit 0–7 | `EXPAND8 <bit> IS <0\|1>` |

@@ -31,6 +31,7 @@
 #include "I2Craw.h"
 #include "Expand8.h"
 #include "ssd1306.h"
+#include "Compass.h"
 #include "nvs_config.h"
 #include "serial_gateway.h"
 
@@ -81,7 +82,8 @@ static bool parse_text_for_local_action(const char *line, char *cmd, size_t cmd_
         vl53l1x_is_cmd(first)      ||
         I2Craw_is_cmd(first)       ||
         expand8_is_cmd(first)      ||
-        ssd1306_is_cmd(first))
+        ssd1306_is_cmd(first)      ||
+        compass_is_cmd(first))
     {
         strncpy(cmd, first, cmd_len - 1);
         if (fields >= 2) *value1 = (int16_t)atoi(second);
@@ -322,7 +324,9 @@ static void app_msg_task(void *arg)
                     strcasecmp(msg.cmd, "SetupExpand8") != 0 &&
                     strcasecmp(msg.cmd, "ClearDisp") != 0 && strcasecmp(msg.cmd, "print") != 0 &&
                     strcasecmp(msg.cmd, "SetupDisp") != 0 && strcasecmp(msg.cmd, "SetupSSD1306") != 0 &&
-                    strcasecmp(msg.cmd, "scanI2C") != 0 && strcasecmp(msg.cmd, "I2Cscan") != 0) {
+                    strcasecmp(msg.cmd, "scanI2C") != 0 && strcasecmp(msg.cmd, "I2Cscan") != 0 &&
+                    strcasecmp(msg.cmd, "SetupCompass") != 0 && strcasecmp(msg.cmd, "GetCompass") != 0 &&
+                    strcasecmp(msg.cmd, "ReadCompass") != 0) {
                     if (strcmp(msg.text, "ACK") != 0 && msg.source[0] != '\0') {
                         mesh_zigbee_send_text("ACK");
                     }
@@ -373,6 +377,7 @@ static void app_msg_task(void *arg)
             else if (I2Craw_is_cmd(msg.cmd))       I2Craw_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             else if (expand8_is_cmd(msg.cmd))      expand8_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             else if (ssd1306_is_cmd(msg.cmd))      ssd1306_execute_cmd(msg.cmd, msg.value, text_arg, text_message);
+            else if (compass_is_cmd(msg.cmd))      compass_execute_cmd(msg.cmd, msg.value, text_message);
             // ----------------------
             else {
                 if (!text_message) mesh_zigbee_send_text("INVALID");
