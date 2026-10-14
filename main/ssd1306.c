@@ -123,33 +123,27 @@ esp_err_t ssd1306_update(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    // 1. Set column address 0 to 127
-    uint8_t col_cmd[] = {0x00, 0x21, 0, SSD1306_WIDTH - 1};
-    esp_err_t ret = i2c_master_transmit(s_dev_handle, col_cmd, sizeof(col_cmd), pdMS_TO_TICKS(100));
+    // 1. Set column address (0-127) and page address (0-7) in a single command stream
+    static const uint8_t reset_addr_cmds[] = {
+        0x00,                               // Control byte: Command stream (Co=0, D/C#=0)
+        0x21, 0, SSD1306_WIDTH - 1,         // Set Column Address: 0 to 127
+        0x22, 0, (SSD1306_HEIGHT / 8) - 1  // Set Page Address: 0 to 7
+    };
+    esp_err_t ret = i2c_master_transmit(s_dev_handle, reset_addr_cmds, sizeof(reset_addr_cmds), pdMS_TO_TICKS(100));
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set column address: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to set column/page address: %s", esp_err_to_name(ret));
         return ret;
     }
 
-    // 2. Set page address 0 to 7
-    uint8_t page_cmd[] = {0x00, 0x22, 0, (SSD1306_HEIGHT / 8) - 1};
-    ret = i2c_master_transmit(s_dev_handle, page_cmd, sizeof(page_cmd), pdMS_TO_TICKS(100));
+    // 2. Send 1024 bytes of framebuffer data with 0x40 prefix
+    static uint8_t tx_data_buf[1 + sizeof(s_buffer)];
+    tx_data_buf[0] = 0x40; // Data prefix: Co=0, D/C#=1
+    memcpy(&tx_data_buf[1], s_buffer, sizeof(s_buffer));
+
+    ret = i2c_master_transmit(s_dev_handle, tx_data_buf, sizeof(tx_data_buf), pdMS_TO_TICKS(200));
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set page address: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to transmit display buffer: %s", esp_err_to_name(ret));
         return ret;
-    }
-
-    // 3. Send 1024 bytes of data in 128-byte page packets with 0x40 data prefix
-    uint8_t tx_buf[1 + SSD1306_WIDTH];
-    tx_buf[0] = 0x40; // Control byte: Co=0, D/C#=1 (Data stream)
-
-    for (int page = 0; page < (SSD1306_HEIGHT / 8); page++) {
-        memcpy(&tx_buf[1], &s_buffer[page * SSD1306_WIDTH], SSD1306_WIDTH);
-        ret = i2c_master_transmit(s_dev_handle, tx_buf, sizeof(tx_buf), pdMS_TO_TICKS(100));
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to write page %d data: %s", page, esp_err_to_name(ret));
-            return ret;
-        }
     }
 
     return ESP_OK;
@@ -170,13 +164,15 @@ esp_err_t ssd1306_init(uint8_t i2c_addr)
 
     uint8_t target_addr = (i2c_addr == 0) ? SSD1306_DEFAULT_I2C_ADDR : i2c_addr;
 
-    esp_err_t probe_ret = i2c_master_probe(bus, target_addr, pdMS_TO_TICKS(50));
+    esp_err_t probe_ret = i2c_master_probe(bus, target_addr, 50);
     if (probe_ret != ESP_OK) {
-        ESP_LOGW(TAG, "SSD1306 probe at 0x%02X returned %s", target_addr, esp_err_to_name(probe_ret));
-        return probe_ret;
+        ESP_LOGW(TAG, "SSD1306 probe at 0x%02X returned %s, attempting direct init", target_addr, esp_err_to_name(probe_ret));
     }
 
     if (s_dev_handle != NULL) {
+        if (s_current_addr == target_addr) {
+            return ESP_OK;
+        }
         i2c_master_bus_rm_device(s_dev_handle);
         s_dev_handle = NULL;
     }

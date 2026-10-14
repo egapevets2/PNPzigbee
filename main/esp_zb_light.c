@@ -321,7 +321,8 @@ static void app_msg_task(void *arg)
                     strcasecmp(msg.cmd, "rdExpand8") != 0 && strcasecmp(msg.cmd, "rdExpand8byte") != 0 &&
                     strcasecmp(msg.cmd, "SetupExpand8") != 0 &&
                     strcasecmp(msg.cmd, "ClearDisp") != 0 && strcasecmp(msg.cmd, "print") != 0 &&
-                    strcasecmp(msg.cmd, "SetupDisp") != 0 && strcasecmp(msg.cmd, "SetupSSD1306") != 0) {
+                    strcasecmp(msg.cmd, "SetupDisp") != 0 && strcasecmp(msg.cmd, "SetupSSD1306") != 0 &&
+                    strcasecmp(msg.cmd, "scanI2C") != 0 && strcasecmp(msg.cmd, "I2Cscan") != 0) {
                     if (strcmp(msg.text, "ACK") != 0 && msg.source[0] != '\0') {
                         mesh_zigbee_send_text("ACK");
                     }

@@ -73,7 +73,9 @@ bool I2Craw_is_cmd(const char *cmd)
     if (!cmd) return false;
     return (strcmp(cmd, "rawI2CchipADR") == 0 ||
             strcmp(cmd, "rawI2Cwr") == 0 ||
-            strcmp(cmd, "rawI2Crd") == 0);
+            strcmp(cmd, "rawI2Crd") == 0 ||
+            strcasecmp(cmd, "scanI2C") == 0 ||
+            strcasecmp(cmd, "I2Cscan") == 0);
 }
 
 bool I2Craw_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool text_message)
@@ -113,6 +115,43 @@ bool I2Craw_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool tex
             mesh_zigbee_send_text(reply);
         } else {
             mesh_zigbee_send_text("I2C RD FAIL");
+        }
+        return true;
+    }
+    else if (strcasecmp(cmd, "scanI2C") == 0 || strcasecmp(cmd, "I2Cscan") == 0) {
+        if (i2c_manager_init_bus() != ESP_OK) {
+            mesh_zigbee_send_text("I2C BUS INIT FAIL");
+            return true;
+        }
+        i2c_master_bus_handle_t bus = i2c_manager_get_bus();
+        if (bus == NULL) {
+            mesh_zigbee_send_text("I2C BUS GET FAIL");
+            return true;
+        }
+
+        char found_buf[128] = "I2C SCAN:";
+        int found_count = 0;
+
+        for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+            // Note: timeout parameter in i2c_master_probe is in milliseconds
+            esp_err_t probe_ret = i2c_master_probe(bus, addr, 20);
+            if (probe_ret == ESP_OK) {
+                found_count++;
+                char entry[24];
+                snprintf(entry, sizeof(entry), " 0x%02X(%d)", addr, addr);
+                if (strlen(found_buf) + strlen(entry) < sizeof(found_buf) - 1) {
+                    strcat(found_buf, entry);
+                }
+                ESP_LOGI(TAG, "I2C device found at address 0x%02X (%d)", addr, addr);
+            }
+        }
+
+        if (found_count == 0) {
+            mesh_zigbee_send_text("I2C SCAN: NONE");
+            ESP_LOGI(TAG, "I2C scan complete: no devices found.");
+        } else {
+            mesh_zigbee_send_text(found_buf);
+            ESP_LOGI(TAG, "I2C scan complete: %s", found_buf);
         }
         return true;
     }
