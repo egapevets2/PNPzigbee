@@ -27,7 +27,6 @@ Supports these commands:
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
-#include "apds9930.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -35,6 +34,7 @@ Supports these commands:
 #include "UpstreamQ.h"
 #include "mesh_zigbee.h"
 #include "mesh_serial.h"
+#include "i2c_manager.h"
 #include "VL53L1X.h"
 
 static i2c_master_dev_handle_t dev_handle = NULL;
@@ -46,9 +46,14 @@ static bool g_stream_vl = false;
 
 esp_err_t vl53l1x_init(void)
 {
-    i2c_master_bus_handle_t bus_handle = get_shared_i2c_bus();
+    if (i2c_manager_init_bus() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize I2C master bus.");
+        return ESP_FAIL;
+    }
+
+    i2c_master_bus_handle_t bus_handle = i2c_manager_get_bus();
     if (bus_handle == NULL) {
-        ESP_LOGE(TAG, "Failed to get shared I2C bus from APDS9930 driver.");
+        ESP_LOGE(TAG, "Failed to get shared I2C bus.");
         return ESP_FAIL;
     }
 
@@ -57,6 +62,11 @@ esp_err_t vl53l1x_init(void)
     {
         ESP_LOGE(TAG, "Sensor not found on I2C bus at address 0x%02x", VL53L1X_I2C_ADDR);
         return ret;
+    }
+
+    if (dev_handle != NULL) {
+        i2c_master_bus_rm_device(dev_handle);
+        dev_handle = NULL;
     }
 
     i2c_device_config_t dev_cfg = {
@@ -80,7 +90,7 @@ esp_err_t vl53l1x_init(void)
 
 esp_err_t vl53l1x_read_distance(uint16_t *distance)
 {
-    if (dev_handle == NULL) return ESP_ERR_INVALID_STATE;
+    if (dev_handle == NULL || distance == NULL) return ESP_ERR_INVALID_STATE;
 
     // NOTE: True distance reading requires the STMicroelectronics ULD API.
     // This function is currently a structural placeholder that reads the Model ID 
@@ -90,7 +100,7 @@ esp_err_t vl53l1x_read_distance(uint16_t *distance)
     uint8_t data[1] = {0};
     
     // Transmit 2-byte register address and receive 1-byte response
-    esp_err_t ret = i2c_master_transmit_receive(dev_handle, reg, 2, data, 1, -1);
+    esp_err_t ret = i2c_master_transmit_receive(dev_handle, reg, 2, data, 1, pdMS_TO_TICKS(100));
     
     if (ret == ESP_OK) {
         *distance = data[0]; // For a valid VL53L1X, this will return 0xEA
@@ -185,8 +195,12 @@ bool vl53l1x_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool te
         return true;
     } else if (strcmp(cmd, "SetupVL") == 0) {
         if (vl53l1x_init() == ESP_OK) {
-            xTaskCreate(vl53l1x_task, "vl53_task", 3072, NULL, 5, NULL);
-            ESP_LOGI(TAG, "VL53L1X task started successfully.");
+            static bool s_task_created = false;
+            if (!s_task_created) {
+                xTaskCreate(vl53l1x_task, "vl53_task", 3072, NULL, 5, NULL);
+                s_task_created = true;
+                ESP_LOGI(TAG, "VL53L1X task started successfully.");
+            }
             if (!text_message) mesh_zigbee_send_text("SETUP VL OK");
         } else {
             ESP_LOGE(TAG, "VL53L1X initialization failed.");

@@ -6,7 +6,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "apds9930.h"       // For get_shared_i2c_bus()
+#include "i2c_manager.h"
+#include "apds9930.h"       // For APDS9930_I2C_ADDR
+#include "VL53L1X.h"        // For VL53L1X_I2C_ADDR
 #include "UpstreamQ.h"      // For SendTheMessage()
 #include "mesh_zigbee.h"    // For mesh_zigbee_send_text()
 #include "Expand8.h"
@@ -28,8 +30,11 @@ static uint8_t probe_pcf8574_address(i2c_master_bus_handle_t bus)
         }
     }
 
-    // 2. Probe PCF8574A address range (0x38 .. 0x3F)
+    // 2. Probe PCF8574A address range (0x38 .. 0x3F), explicitly skipping APDS9930 (0x39)
     for (uint8_t addr = 0x38; addr <= 0x3F; addr++) {
+        if (addr == APDS9930_I2C_ADDR) {
+            continue; // Skip fixed APDS-9930 optical sensor address
+        }
         if (i2c_master_probe(bus, addr, pdMS_TO_TICKS(20)) == ESP_OK) {
             ESP_LOGI(TAG, "Found PCF8574A at I2C address 0x%02X", addr);
             return addr;
@@ -42,21 +47,29 @@ static uint8_t probe_pcf8574_address(i2c_master_bus_handle_t bus)
 
 esp_err_t expand8_init(uint8_t i2c_addr)
 {
-    i2c_master_bus_handle_t bus = get_shared_i2c_bus();
+    if (i2c_manager_init_bus() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize I2C master bus.");
+        return ESP_FAIL;
+    }
+
+    i2c_master_bus_handle_t bus = i2c_manager_get_bus();
     if (bus == NULL) {
         ESP_LOGE(TAG, "Failed to get shared I2C bus.");
         return ESP_FAIL;
     }
 
     uint8_t target_addr = i2c_addr;
-    if (target_addr == 0 || target_addr < 0x08 || target_addr > 0x77) {
+    if (target_addr == 0) {
+        // Explicit default address (0x20 = 32 decimal) prevents bus clash during unparameterized setup
+        target_addr = PCF8574_DEFAULT_ADDR;
+    } else if (target_addr == 0xFF || target_addr < 0x08 || target_addr > 0x77) {
         target_addr = probe_pcf8574_address(bus);
-    } else {
-        esp_err_t probe_err = i2c_master_probe(bus, target_addr, pdMS_TO_TICKS(50));
-        if (probe_err != ESP_OK) {
-            ESP_LOGW(TAG, "Device probe at specified address 0x%02X returned %s",
-                     target_addr, esp_err_to_name(probe_err));
-        }
+    }
+
+    esp_err_t probe_err = i2c_master_probe(bus, target_addr, pdMS_TO_TICKS(50));
+    if (probe_err != ESP_OK) {
+        ESP_LOGW(TAG, "Device probe at address 0x%02X (dec %d) returned %s",
+                 target_addr, target_addr, esp_err_to_name(probe_err));
     }
 
     // Remove existing handle if already configured
@@ -202,10 +215,8 @@ bool expand8_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool te
     }
     else if (strcmp(cmd, "wrExpand8") == 0) {
         if (s_dev_handle == NULL) {
-            if (expand8_init(0) != ESP_OK) {
-                if (!text_message) mesh_zigbee_send_text("EXPAND8 NOT READY");
-                return true;
-            }
+            if (!text_message) mesh_zigbee_send_text("EXPAND8 NOT READY");
+            return true;
         }
         if (value < 0 || value > 7) {
             ESP_LOGE(TAG, "wrExpand8 bit %d out of range [0..7]", value);
@@ -224,10 +235,8 @@ bool expand8_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool te
     }
     else if (strcmp(cmd, "rdExpand8") == 0) {
         if (s_dev_handle == NULL) {
-            if (expand8_init(0) != ESP_OK) {
-                SendTheMessage("EXPAND8 NOT READY");
-                return true;
-            }
+            SendTheMessage("EXPAND8 NOT READY");
+            return true;
         }
         if (value < 0 || value > 7) {
             ESP_LOGE(TAG, "rdExpand8 bit %d out of range [0..7]", value);
@@ -246,7 +255,10 @@ bool expand8_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool te
         return true;
     }
     else if (strcmp(cmd, "setExpand8") == 0) {
-        if (s_dev_handle == NULL) expand8_init(0);
+        if (s_dev_handle == NULL) {
+            if (!text_message) mesh_zigbee_send_text("EXPAND8 NOT READY");
+            return true;
+        }
         if (value >= 0 && value <= 7) {
             expand8_write_bit((uint8_t)value, 1);
             if (!text_message) mesh_zigbee_send_text("EXPAND8 WR OK");
@@ -254,7 +266,10 @@ bool expand8_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool te
         return true;
     }
     else if (strcmp(cmd, "clrExpand8") == 0) {
-        if (s_dev_handle == NULL) expand8_init(0);
+        if (s_dev_handle == NULL) {
+            if (!text_message) mesh_zigbee_send_text("EXPAND8 NOT READY");
+            return true;
+        }
         if (value >= 0 && value <= 7) {
             expand8_write_bit((uint8_t)value, 0);
             if (!text_message) mesh_zigbee_send_text("EXPAND8 WR OK");
@@ -262,7 +277,10 @@ bool expand8_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool te
         return true;
     }
     else if (strcmp(cmd, "wrExpand8byte") == 0) {
-        if (s_dev_handle == NULL) expand8_init(0);
+        if (s_dev_handle == NULL) {
+            if (!text_message) mesh_zigbee_send_text("EXPAND8 NOT READY");
+            return true;
+        }
         if (expand8_write_port((uint8_t)value) == ESP_OK) {
             if (!text_message) mesh_zigbee_send_text("EXPAND8 WR OK");
         } else {
@@ -271,7 +289,10 @@ bool expand8_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool te
         return true;
     }
     else if (strcmp(cmd, "rdExpand8byte") == 0) {
-        if (s_dev_handle == NULL) expand8_init(0);
+        if (s_dev_handle == NULL) {
+            SendTheMessage("EXPAND8 NOT READY");
+            return true;
+        }
         uint8_t port_val = 0;
         if (expand8_read_port(&port_val) == ESP_OK) {
             char reply[32];

@@ -282,12 +282,13 @@ static void app_msg_task(void *arg)
                     continue;
                 }
 
-                // If the command is ping, setDAC, setx, clrx, SetupSerialBridge, rdExpand8, or SetupExpand8, the dedicated response is sent separately!
+                // If the command is ping, setDAC, setx, clrx, SetupSerialBridge, rdExpand8, rdExpand8byte, or SetupExpand8, the dedicated response is sent separately!
                 // Do NOT send an ACK here so it doesn't conflict or duplicate the reply.
                 if (strcasecmp(msg.cmd, "ping") != 0 && strcasecmp(msg.cmd, "pingx") != 0 &&
                     strcasecmp(msg.cmd, "setDAC") != 0 && strcasecmp(msg.cmd, "SetupSerialBridge") != 0 &&
                     strcasecmp(msg.cmd, "setx") != 0 && strcasecmp(msg.cmd, "clrx") != 0 &&
-                    strcasecmp(msg.cmd, "rdExpand8") != 0 && strcasecmp(msg.cmd, "SetupExpand8") != 0) {
+                    strcasecmp(msg.cmd, "rdExpand8") != 0 && strcasecmp(msg.cmd, "rdExpand8byte") != 0 &&
+                    strcasecmp(msg.cmd, "SetupExpand8") != 0) {
                     if (strcmp(msg.text, "ACK") != 0 && msg.source[0] != '\0') {
                         mesh_zigbee_send_text("ACK");
                     }

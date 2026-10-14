@@ -17,8 +17,9 @@ reads the value in register address 2 of the device with I2C addr "rawI2CchipADR
 #include <string.h>
 #include "esp_log.h"
 #include "driver/i2c_master.h"
+#include "freertos/FreeRTOS.h"
 #include "mesh_zigbee.h"
-#include "apds9930.h" // For get_shared_i2c_bus()
+#include "i2c_manager.h"
 #include "I2Craw.h"
 
 static const char *TAG = "I2CRAW";
@@ -40,7 +41,12 @@ static esp_err_t ensure_device_handle(uint8_t addr)
         current_dev_handle = NULL;
     }
 
-    i2c_master_bus_handle_t bus = get_shared_i2c_bus();
+    if (i2c_manager_init_bus() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize I2C master bus.");
+        return ESP_FAIL;
+    }
+
+    i2c_master_bus_handle_t bus = i2c_manager_get_bus();
     if (bus == NULL) {
         ESP_LOGE(TAG, "Failed to get shared I2C bus.");
         return ESP_FAIL;
@@ -88,7 +94,7 @@ bool I2Craw_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool tex
             return true;
         }
         uint8_t data[2] = {(uint8_t)value, (uint8_t)value2};
-        if (i2c_master_transmit(current_dev_handle, data, 2, -1) == ESP_OK) {
+        if (i2c_master_transmit(current_dev_handle, data, 2, pdMS_TO_TICKS(100)) == ESP_OK) {
             if (!text_message) mesh_zigbee_send_text("I2C WR OK");
         } else {
             if (!text_message) mesh_zigbee_send_text("I2C WR FAIL");
@@ -102,7 +108,7 @@ bool I2Craw_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool tex
         }
         uint8_t reg = (uint8_t)value;
         uint8_t data = 0;
-        if (i2c_master_transmit_receive(current_dev_handle, &reg, 1, &data, 1, -1) == ESP_OK) {
+        if (i2c_master_transmit_receive(current_dev_handle, &reg, 1, &data, 1, pdMS_TO_TICKS(100)) == ESP_OK) {
             snprintf(reply, sizeof(reply), "I2Cval %d %d", reg, data);
             mesh_zigbee_send_text(reply);
         } else {

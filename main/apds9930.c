@@ -11,15 +11,12 @@
 #include "UpstreamQ.h"
 #include "mesh_zigbee.h"
 #include "mesh_serial.h"
+#include "i2c_manager.h"
 
-#define I2C_MASTER_SDA_IO 22
-#define I2C_MASTER_SCL_IO 23
-#define I2C_MASTER_NUM I2C_NUM_0
 #define I2C_MASTER_FREQ_HZ 100000
 
 // #define _9930_DEBUG_PRINT_ENABLE
 
-i2c_master_bus_handle_t g_i2c_bus_handle = NULL;
 static i2c_master_dev_handle_t dev_handle = NULL;
 static const char *TAG = "APDS9930";
 
@@ -65,10 +62,10 @@ esp_err_t apds9930_config(void)
     for (int i = 0; i < num_commands; i++)
     {
         uint8_t buf[2] = {setup[i][0], setup[i][1]};
-        esp_err_t ret = i2c_master_transmit(dev_handle, buf, 2, -1);
+        esp_err_t ret = i2c_master_transmit(dev_handle, buf, 2, pdMS_TO_TICKS(100));
         if (ret != ESP_OK)
         {
-            ESP_LOGE(TAG, "Failed to write setup register 0x%02x", setup[i][0] & ~0x80);
+            ESP_LOGE(TAG, "Failed to write setup register 0x%02x: %s", setup[i][0] & ~0x80, esp_err_to_name(ret));
             return ret;
         }
     }
@@ -78,33 +75,27 @@ esp_err_t apds9930_config(void)
     return ESP_OK;
 }
 
-i2c_master_bus_handle_t get_shared_i2c_bus(void)
-{
-    if (g_i2c_bus_handle == NULL) {
-        i2c_master_bus_config_t i2c_mst_config = {
-            .clk_source = I2C_CLK_SRC_DEFAULT,
-            .i2c_port = I2C_MASTER_NUM,
-            .scl_io_num = I2C_MASTER_SCL_IO,
-            .sda_io_num = I2C_MASTER_SDA_IO,
-            .glitch_ignore_cnt = 7,
-            .flags.enable_internal_pullup = true,
-        };
-        i2c_new_master_bus(&i2c_mst_config, &g_i2c_bus_handle);
-    }
-    return g_i2c_bus_handle;
-}
-
 esp_err_t apds9930_init(void)
 {
-    i2c_master_bus_handle_t bus_handle = get_shared_i2c_bus();
+    if (i2c_manager_init_bus() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize I2C master bus.");
+        return ESP_FAIL;
+    }
+
+    i2c_master_bus_handle_t bus_handle = i2c_manager_get_bus();
     if (bus_handle == NULL) return ESP_FAIL;
     esp_err_t ret;
 
     ret = i2c_master_probe(bus_handle, APDS9930_I2C_ADDR, pdMS_TO_TICKS(100));
     if (ret != ESP_OK)
     {
-        ESP_LOGE(TAG, "Sensor not found on I2C bus at address 0x%02x", APDS9930_I2C_ADDR);
+        ESP_LOGE(TAG, "Sensor not found on I2C bus at address 0x%02x: %s", APDS9930_I2C_ADDR, esp_err_to_name(ret));
         return ret;
+    }
+
+    if (dev_handle != NULL) {
+        i2c_master_bus_rm_device(dev_handle);
+        dev_handle = NULL;
     }
 
     i2c_device_config_t dev_cfg = {
@@ -124,9 +115,11 @@ esp_err_t apds9930_init(void)
 
 esp_err_t apds9930_read_proximity(uint16_t *proximity)
 {
+    if (dev_handle == NULL || proximity == NULL) return ESP_ERR_INVALID_STATE;
+
     uint8_t reg = 0xA0 | 0x18;
     uint8_t data[2] = {0};
-    esp_err_t ret = i2c_master_transmit_receive(dev_handle, &reg, 1, data, 2, -1);
+    esp_err_t ret = i2c_master_transmit_receive(dev_handle, &reg, 1, data, 2, pdMS_TO_TICKS(100));
 
     *proximity = data[0] + (256 * data[1]);
 
@@ -229,7 +222,8 @@ bool proximity_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool 
         return true;
     } else if (strcmp(cmd, "ReadProximity") == 0 || strcmp(cmd, "ReadProx") == 0) {
         if (dev_handle == NULL) {
-            apds9930_init();
+            mesh_zigbee_send_text("PROX NOT READY");
+            return true;
         }
         uint16_t prox = 0;
         char resp[32];

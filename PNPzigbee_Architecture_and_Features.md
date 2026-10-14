@@ -38,7 +38,7 @@ flowchart TD
 
     subgraph Resource_Managers ["Hardware Resource Arbiters"]
         LEDC_MGR["LEDC Resource Manager (6 Ch / 4 Timers)"]
-        I2C_BUS["Shared I2C Master Bus Handle (400kHz)"]
+        I2C_MGR["i2c_manager (On-Demand Bus Lifecycle, GPIO 22/23)"]
         ADC_UNIT["ADC1 Oneshot Unit"]
     end
 
@@ -50,6 +50,7 @@ flowchart TD
         PARSER --> NEO["NeoPixel (WS2812 RMT/SPI)"]
         PARSER --> GPIO_OUT["GPIO_handler (Digital Out)"]
         PARSER --> LED["light_driver (Status LED)"]
+        PARSER --> EXP8["Expand8 (PCF8574 8-Bit I/O Expander)"]
     end
 
     subgraph Sensor_Subsystems ["Sensor & Telemetry Subsystems"]
@@ -65,9 +66,10 @@ flowchart TD
     BLDC --> LEDC_MGR
     STEPPER --> LEDC_MGR
 
-    VL53 --> I2C_BUS
-    APDS --> I2C_BUS
-    I2C_RAW --> I2C_BUS
+    EXP8 --> I2C_MGR
+    VL53 --> I2C_MGR
+    APDS --> I2C_MGR
+    I2C_RAW --> I2C_MGR
 
     ADC_DRV --> ADC_UNIT
 
@@ -198,10 +200,81 @@ The ESP32-C6 features **6 LEDC PWM channels** and **4 hardware timers** in low-s
 - **Timer Sharing:** When a driver requests a timer (e.g., `ledc_manager_alloc_timer(freq_hz, &timer)`), the arbiter first checks if an active timer is already running at that exact frequency. If so, it shares that timer index, saving scarce timer resources.
 - **Channel Allocation:** Channels 0 through 5 are allocated dynamically on a first-come, first-served basis with tracking of in-use states.
 
-### 4.2 Shared I2C Bus Architecture
-Sensors (`VL53L1X`, `APDS-9930`) and the raw I2C tool (`I2Craw`) utilize the new ESP-IDF v6.0 unified `i2c_master` driver:
-- **Bus Speed:** 400 kHz Fast-Mode.
-- **Bus Ownership:** Initialized once via `get_shared_i2c_bus()`. Multiple device handles are attached to the same bus handle, preventing bus re-initialization crashes.
+### 4.2 Shared I2C Bus Subsystem (`i2c_manager`)
+
+The ESP32-C6 star network spoke nodes feature a centralized, thread-safe I2C subsystem managed by [`i2c_manager.c`](file:///c:/Users/egape/PNPzigbee/main/i2c_manager.c) and [`i2c_manager.h`](file:///c:/Users/egape/PNPzigbee/main/i2c_manager.h). Designed for multi-peripheral flexibility and industrial resilience, it hosts distance sensors, optical proximity detectors, I/O expanders, and direct bus debug utilities across a single physical 2-wire interface.
+
+```mermaid
+flowchart TD
+    subgraph I2C_Subsystem ["Central I2C Subsystem (GPIO 22 / 23)"]
+        MGR["i2c_manager\n(On-Demand Bus Lifecycle)"]
+        BUS["Shared i2c_master_bus_handle_t\n(I2C_NUM_0 @ 100 kHz)"]
+        MUTEX["Driver Bus Mutex\n(Atomic Transaction Serialization)"]
+    end
+
+    subgraph Peripherals ["Attached I2C Device Handles"]
+        DEV_EXP["Expand8 (PCF8574)\nAddr: 0x20 (32)"]
+        DEV_APDS["APDS-9930 Proximity\nAddr: 0x39 (57)"]
+        DEV_VL["VL53L1X Distance\nAddr: 0x29 (41)"]
+        DEV_RAW["I2Craw Dynamic Handle\nAddr: User Configured"]
+    end
+
+    MGR --> |Creates On-Demand| BUS
+    BUS --> MUTEX
+    MUTEX --> DEV_EXP
+    MUTEX --> DEV_APDS
+    MUTEX --> DEV_VL
+    MUTEX --> DEV_RAW
+```
+
+#### 4.2.1 On-Demand Bus Lifecycle & "Zero-I2C Application" Architecture
+A core architectural requirement of PNPzigbee is maximum hardware versatility: the firmware must gracefully support custom applications that require **zero I2C devices**.
+- **Boot-Time Pin Isolation:** At system boot, SCL (`GPIO 23`) and SDA (`GPIO 22`) remain standard unconfigured GPIOs. No I2C driver is created during boot. If an application never uses I2C, both pins remain 100% free for standard digital I/O, PWM channels, or external signaling.
+- **Elimination of Implicit / Lazy Initialization:** Earlier firmware architectures lazily initialized the I2C bus whenever any peripheral read or write command was received. This behavior was eliminated. If a user or script issues a command to an uninitialized device (e.g., `Kitchen rdExpand8 0` or `ReadProx`), the driver gracefully rejects the command with an error message (`EXPAND8 NOT READY`, `PROX NOT READY`, or `ERR: NO I2C ADR SET`) and **leaves the GPIO pins completely untouched**.
+- **Explicit On-Demand Allocation:** The shared bus is created *only* when an explicit peripheral setup command is executed:
+  - `SetupExpand8 [addr]` initializes the bus and attaches the PCF8574 handle.
+  - `SetupProximity` initializes the bus and attaches the APDS-9930 handle.
+  - `SetupVL` initializes the bus and attaches the VL53L1X handle.
+  - `rawI2CchipADR <addr>` initializes the bus and attaches the dynamic raw access handle.
+- **Pin Reclamation (`i2c_manager_deinit_bus`):** When all I2C operations are completed, calling `i2c_manager_deinit_bus()` tears down the master bus handle and resets both GPIO 22 and 23 via `gpio_reset_pin()`, returning them to high-impedance general-purpose inputs.
+
+#### 4.2.2 ESP-IDF v6.0 Unified `i2c_master` Architecture
+The subsystem leverages the modern ESP-IDF v6.0 `driver/i2c_master.h` driver model:
+- **Centralized Master Bus:** A single static bus handle (`s_i2c_bus_handle`) owns `I2C_NUM_0`.
+- **Multi-Device Handle Attachment:** Rather than opening and closing the bus per transaction, each peripheral driver allocates its own `i2c_master_dev_handle_t` tied to its 7-bit slave address on the shared bus.
+- **Electrical Parameters:**
+  - **SCL Pin:** `GPIO 23`
+  - **SDA Pin:** `GPIO 22`
+  - **Clock Frequency:** `100 kHz` Standard Mode (guarantees signal integrity across external wiring harnesses, breadboards, and multi-drop sensor cables).
+  - **Hardware Glitch Filter:** `glitch_ignore_cnt = 7` clock cycles, rejecting RF switching noise and inductive motor transients.
+  - **Internal Pull-Ups:** Internal pull-ups are enabled (`flags.enable_internal_pullup = true`), operating alongside onboard physical 4.7 kΩ pull-up resistors.
+
+#### 4.2.3 Two-Tier Multi-Device Arbitration & Conflict Prevention
+The spoke node supports concurrent operation of up to four or more I2C peripherals on the same physical lines without bus clashes:
+1. **Driver-Level Mutex Arbitration:** The ESP-IDF v6.0 `i2c_master` component incorporates an internal FreeRTOS mutex inside the bus structure. When multiple FreeRTOS tasks (such as `vl53_task` and `prox_task`) perform reads, the driver queues and serializes each transaction atomically. No bus transactions can interleave or corrupt data frames.
+2. **Task-Level Command Pipeline:** All incoming wireless ESP-NOW frames and USB serial console commands are sequentially processed by a single FreeRTOS task ([`app_msg_task`](file:///c:/Users/egape/PNPzigbee/main/esp_zb_light.c)). Commands are executed in strict arrival order, preventing concurrent access from the network layer.
+
+#### 4.2.4 Address Mapping & Proactive Clash Elimination
+The shared bus accommodates standard 7-bit peripheral addresses:
+
+| Peripheral Device | Target Function | 7-Bit Address (Hex) | Address (Dec) | Configuration Command |
+| :--- | :--- | :--- | :--- | :--- |
+| **VL53L1X** | Time-of-Flight Distance | `0x29` | 41 | `SetupVL` |
+| **APDS-9930** | Optical Proximity / ALS | `0x39` | 57 | `SetupProximity` |
+| **PCF8574** | 8-Bit I/O Port Expander | `0x20` – `0x27` | 32 – 39 | `SetupExpand8 [addr]` (Default: `32` / `0x20`) |
+| **PCF8574A** | 8-Bit I/O Expander (Variant) | `0x38` – `0x3F` | 56 – 63 | `SetupExpand8 [addr]` |
+| **I2Craw** | Direct Register Debugger | Dynamic (`0x08`–`0x77`) | Dynamic | `rawI2CchipADR <addr>` |
+
+##### Proactive Address Clash Resolution: PCF8574A vs. APDS-9930
+* **The Vulnerability:** The alternate PCF8574A address space (`0x38`–`0x3F`) directly encompasses the fixed address of the APDS-9930 optical sensor (`0x39`). In naive address sweep implementations, probing `0x39` receives an ACK from the APDS-9930, causing the I/O expander driver to falsely bind to the optical sensor and corrupt its registers with initial port write states (`0xFF`).
+* **The Resolution:** 
+  1. **Probe Address Filtering:** The auto-probe routine in [`Expand8.c`](file:///c:/Users/egape/PNPzigbee/main/Expand8.c) explicitly skips address `0x39` (`APDS9930_I2C_ADDR`) during address scans.
+  2. **Explicit Address Configuration:** `SetupExpand8` defaults directly to `32` (`0x20`), preventing unnecessary probing. Explicit address targeting (e.g., `SetupExpand8 32`) is recommended and strictly enforced in automated test fixtures.
+
+#### 4.2.5 Transaction Timeouts & System Fault Resilience
+To protect the node from hanging due to a disconnected sensor, missing pull-up resistor, or slave clock-stretching lockup:
+- **Strict Bounded Timeouts:** All I2C peripheral drivers ([`Expand8.c`](file:///c:/Users/egape/PNPzigbee/main/Expand8.c), [`apds9930.c`](file:///c:/Users/egape/PNPzigbee/main/apds9930.c), [`VL53L1X.c`](file:///c:/Users/egape/PNPzigbee/main/VL53L1X.c), and [`I2Craw.c`](file:///c:/Users/egape/PNPzigbee/main/I2Craw.c)) utilize a bounded timeout of `pdMS_TO_TICKS(100)` (100 ms).
+- **Elimination of Unbounded Waits:** Unbounded `-1` (`portMAX_DELAY`) timeouts have been completely removed. Any transaction encountering bus stall conditions aborts cleanly within 100 ms, logs an error, and returns an error response upstream without starving the FreeRTOS scheduler or delaying adjacent peripherals.
 
 ---
 
@@ -258,6 +331,25 @@ Provides 4 general-purpose PWM channels (1–4):
 #### 4. Dynamic Digital I/O (`GPIO_handler`)
 - **Features:** Dynamic pin assignment as inputs or outputs.
 - **Background Polling:** A 50ms polling task tracks all configured input pins. Any state change instantly generates an upstream Zigbee report: `GPIO <pin> CHANGED TO <0|1>`.
+
+#### 5. 8-Bit I/O Port Expander (`Expand8` / PCF8574)
+- **Silicon Architecture:** Quasi-bidirectional 8-bit open-drain I/O expander communicating over the shared I2C bus.
+- **Port State Shadowing:** Maintains an internal state cache (`s_port_state`, initialized to `0xFF` / high-impedance inputs with internal weak pull-ups).
+- **Bit-Level Operations:**
+  - `wrExpand8 <bit> [val]`: Writes digital level (0 or 1) to individual bit index (0–7).
+  - `setExpand8 <bit>` / `clrExpand8 <bit>`: Atomic bit set / clear operations.
+  - `rdExpand8 <bit>`: Queries individual bit state, returning `EXPAND8 <bit> IS <0|1>`.
+- **Byte-Level Operations:**
+  - `wrExpand8byte <val>`: Atomic 8-bit write updating all output pins simultaneously.
+  - `rdExpand8byte`: Queries 8-bit port register, returning `EXPAND8 BYTE 0x<HEX>`.
+- **Dedicated Telemetry Suppression:** Dedicated telemetry queries (`rdExpand8`, `rdExpand8byte`, `SetupExpand8`) suppress generic generic `ACK` packets to avoid duplicate frames over the wireless mesh.
+
+#### 6. Direct Register Debug Tool (`I2Craw`)
+- **Direct Bus Inspection:** Allows the central coordinator or developer console to perform raw I2C transactions against any attached slave without compiling dedicated device drivers.
+- **Dynamic Slave Attachment:** `rawI2CchipADR <addr>` dynamically binds an `i2c_master_dev_handle_t` to any 7-bit slave address.
+- **Register Operations:**
+  - `rawI2Cwr <reg> <val>`: Transmits 1-byte value to 1-byte register address.
+  - `rawI2Crd <reg>`: Transmits register address and receives 1-byte value, returning `I2Cval <reg> <val>`.
 
 ---
 
@@ -362,20 +454,28 @@ All commands can be sent as raw Zigbee APS text payloads, ZCL strings, or typed 
 | `SetGPIOval` | `<gpio> <val>` | Set digital output level (0 or 1) | `GOT SETGPIO OK` |
 | `ReadGPIO` | `<gpio>` | Query digital input level | `GPIO <pin> IS <0\|1>` |
 
-### 7.7 Distance, Proximity & Raw I2C
+### 7.7 I2C Peripherals: Distance, Proximity, I/O Expander & Raw Bus Access
 | Command | Parameters | Description | Response / Event |
 | :--- | :--- | :--- | :--- |
+| `SetupExpand8` | `[addr]` | Initialize PCF8574 I/O expander (defaults to address 32 / `0x20`) | `SETUP EXPAND8 OK` / `FAIL` |
+| `wrExpand8` | `<bit> [val]` | Write bit 0–7 (val: 0 or 1, default 1) | `EXPAND8 WR OK` / `FAIL` |
+| `rdExpand8` | `<bit>` | Read individual bit 0–7 | `EXPAND8 <bit> IS <0\|1>` |
+| `setExpand8` | `<bit>` | Set bit 0–7 HIGH (1) | `EXPAND8 WR OK` |
+| `clrExpand8` | `<bit>` | Clear bit 0–7 LOW (0) | `EXPAND8 WR OK` |
+| `wrExpand8byte` | `<byte>` | Atomic 8-bit port write (0–255) | `EXPAND8 WR OK` / `FAIL` |
+| `rdExpand8byte` | *none* | Read full 8-bit port state | `EXPAND8 BYTE 0x<HEX>` |
 | `SetupVL` | *none* | Init VL53L1X ToF sensor & start distance task | `SETUP VL OK` / `FAIL` |
 | `StreamVL` | `<0\|1>` | Enable/disable live distance streaming | `VL STREAM ON/OFF` |
 | `VLUpperThresh` | `<mm>` | Set distance upper alert threshold | `GOT VLUPPERTHRESH OK` |
 | `VLLowerThresh` | `<mm>` | Set distance lower alert threshold | `GOT VLLOWERTHRESH OK` |
 | `SetupProximity` | *none* | Init APDS-9930 proximity sensor & start task | `SETUP PROX OK` / `FAIL` |
+| `ReadProx`, `ReadProximity` | *none* | Read instantaneous optical proximity level | `PROXval <val>` / `PROX NOT READY` |
 | `StreamProx` | `<0\|1>` | Enable/disable live proximity streaming | `PROX STREAM ON/OFF` |
 | `Npulses` | `<count>` | Set optical IR emitter pulse count | `GOT NPULSES OK` |
 | `UpperThresh`, `LowerThresh` | `<val>` | Set proximity alert thresholds | `GOT UPPER/LOWERTHRESH OK` |
-| `rawI2CchipADR` | `<7bit_addr>` | Select target I2C slave address | `I2C CHIP ADR OK` |
-| `rawI2Cwr` | `<reg> <val>` | Write 1 byte to register over I2C | `I2C WR OK` |
-| `rawI2Crd` | `<reg>` | Read 1 byte from register over I2C | `I2Cval <reg> <val>` |
+| `rawI2CchipADR` | `<7bit_addr>` | Select target I2C slave address | `I2C CHIP ADR OK` / `FAIL` |
+| `rawI2Cwr` | `<reg> <val>` | Write 1 byte to register over I2C | `I2C WR OK` / `FAIL` |
+| `rawI2Crd` | `<reg>` | Read 1 byte from register over I2C | `I2Cval <reg> <val>` / `FAIL` |
 
 ---
 
@@ -931,6 +1031,67 @@ Because Long Range mode uses Espressif-patented non-standard modulation:
 * **All Nodes Must Match:** The Coordinator Hub and every participating End Device spoke (`Kitchen`, `Garage`, `N1`, `N2`, `N3`) must have `WIFI_PROTOCOL_LR` active. If a device has standard-only protocols enabled, it cannot decode LR frames.
 * **Underlying Flatness vs. Star Architecture:** While the ESP-NOW MAC layer physically permits arbitrary peer-to-peer unicasts between any two devices, PNPzigbee intentionally organizes communication as a **Star Topology (Hub-and-Spoke)** centered on the Coordinator. All application commands originate from the Coordinator Hub to the End Device spokes, and all telemetry/ACKs flow back from the spokes directly to the Coordinator Hub. This intentional design harnesses the link budget advantage of ESP-NOW LR while retaining strict failure domain isolation, deterministic low latency (~20–30 ms), zero mesh broadcast routing overhead, and direct unmasked 1:1 LQI monitoring.
 * **Live Benchmark Verification:** In physical hardware test verification (`test_runner.py` mesh resilience tests), bidirectional command execution (`blink 1` -> `[ACK]`) across the Coordinator Hub and End Node spokes over the 250 Kbps LR link consistently passes in **20 to 29 ms** round-trip time with physical LQI values exceeding 200/255. Full network re-establishment following multi-node reboots completes in **1.3 to 2.0 seconds**.
+
+---
+
+## 13. I2C Automated Verification & Test Suite (`test_runner.py`)
+
+Automated regression and Hardware-in-the-Loop verification of the I2C subsystem is integrated directly into [`ZigbeeTestRunner/test_runner.py`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py).
+
+### 13.1 PCF8574 Expand8 Dual Alternating Bit Test
+The PCF8574 automated test ([`run_expand8_test()`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py#L1332)) exercises all eight quasi-bidirectional I/O pins over the wireless star network:
+
+```mermaid
+flowchart TD
+    START["1. Dispatch SetupExpand8 32"] --> VERIFY_SETUP{"Setup OK?"}
+    VERIFY_SETUP -- No --> FAIL["Test Failed: Init Error"]
+    VERIFY_SETUP -- Yes --> PATTERN_A["2. Write Pattern A (LSB=0):<br>[0, 1, 0, 1, 0, 1, 0, 1] (0xAA)"]
+    PATTERN_A --> READ_A["3. Read & Verify Bits 0..7"]
+    READ_A --> VERIFY_A{"All 8 Bits Match?"}
+    VERIFY_A -- No --> FAIL
+    VERIFY_A -- Yes --> PATTERN_B["4. Write Pattern B (LSB=1):<br>[1, 0, 1, 0, 1, 0, 1, 0] (0x55)"]
+    PATTERN_B --> READ_B["5. Read & Verify Bits 0..7"]
+    READ_B --> VERIFY_B{"All 8 Bits Match?"}
+    VERIFY_B -- No --> FAIL
+    VERIFY_B -- Yes --> PASS["Test Passed: 16/16 Bits Verified"]
+```
+
+1. **Explicit Initialization:**
+   - Transmits `<TargetName> SetupExpand8 <addr>` (defaults to address 32 / `0x20`).
+   - Awaits confirmation `SETUP EXPAND8 OK` from the spoke node.
+2. **Step 1: Pattern A Verification (LSB = 0):**
+   - Sequential bit writes via `wrExpand8 <bit> <val>`:
+     - `bit 0 = 0`, `bit 1 = 1`, `bit 2 = 0`, `bit 3 = 1`, `bit 4 = 0`, `bit 5 = 1`, `bit 6 = 0`, `bit 7 = 1` (Byte equivalent: `0xAA`).
+   - Reads back each pin independently via `rdExpand8 <bit>` and checks that every bit matches the expected value.
+3. **Step 2: Pattern B Inversion Verification (LSB = 1):**
+   - Sequential inverted bit writes:
+     - `bit 0 = 1`, `bit 1 = 0`, `bit 2 = 1`, `bit 3 = 0`, `bit 4 = 1`, `bit 5 = 0`, `bit 6 = 1`, `bit 7 = 0` (Byte equivalent: `0x55`).
+   - Reads back each pin independently via `rdExpand8 <bit>` and verifies that every bit toggled successfully.
+4. **Significance:**
+   - Proves every pin can transition between logic low (sinking current) and logic high (internal weak pull-up) without crosstalk or register bit shifts.
+   - Proves bidirectional request/response telemetry across the ESP-NOW Long Range PHY link with dedicated ACK suppression.
+
+### 13.2 Test Runner CLI & Interactive Usage
+
+```bash
+# Direct command line invocation
+python test_runner.py -p COM11 -t Kitchen --expand8 --expand8-addr 32
+
+# Interactive test menu
+python test_runner.py -p COM11 -t Kitchen
+# Select option [E] from the interactive menu
+```
+
+### 13.3 Boot Isolation Verification
+To prove the "Zero-I2C" architectural requirement in physical hardware:
+1. Reboot the target node: `Kitchen reboot`.
+2. Issue a read query without setup: `Kitchen rdExpand8 0`.
+3. The node immediately returns:
+   ```text
+   ESP-NOW RX frame: src='Kitchen' tgt='coordinator' cmd='' text='EXPAND8 NOT READY'
+   ```
+4. SCL (`GPIO 23`) and SDA (`GPIO 22`) remain untouched as standard general-purpose inputs throughout.
+
 
 
 
