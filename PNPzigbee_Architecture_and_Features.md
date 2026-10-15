@@ -486,7 +486,21 @@ All commands can be sent as raw Zigbee APS text payloads, ZCL strings, or typed 
 | `HoldPWM` | `<duty_pct>` | Set stationary holding torque duty cycle | `GOT HOLDPWM OK` |
 | `Accel`, `Decel` | `<steps>` | Set ramp acceleration / deceleration step counts | `GOT ACCEL/DECEL OK` |
 
-### 7.5 NeoPixel (Addressable RGB)
+### 7.5 Unipolar Stepper Motor (Adafruit Small Reduction Stepper)
+Supports 5-wire unipolar steppers (e.g. Adafruit 28BYJ-48 small reduction stepper with 5V center-tap and gate-level N-channel MOSFET drivers):
+- **Coil A:** Orange (XIAO Pin 1), Pink (XIAO Pin 2)
+- **Coil B:** Yellow (XIAO Pin 21), Blue (XIAO Pin 22)
+- Coils are automatically powered down when movement finishes to eliminate heat and idle current draw.
+
+| Command | Parameters | Description | Response / Event |
+| :--- | :--- | :--- | :--- |
+| `SetupUnipolar` | *none* | Initialize 4-phase unipolar stepper driver on XIAO Pins 1, 2, 21, 22 | `SETUP UNIPOLAR OK` / `[ACK]` |
+| `UniStepFwd` | `<steps>` | Step forward by N steps (full-step high-torque mode) | `GOT UNISTEPFWD <N> OK` / `[ACK]` |
+| `UniiStepBkw`, `UniStepBkw` | `<steps>` | Step backward by N steps (full-step high-torque mode) | `GOT UNISTEPBKW <N> OK` / `[ACK]` |
+| `UniStepStop` | *none* | Immediately halt motion and power down all 4 coils | `GOT UNISTEPSTOP OK` / `[ACK]` |
+| `UniStepDelay` | `<ms>` | Set delay between steps in milliseconds (default 5ms) | `GOT UNISTEPDELAY OK` / `[ACK]` |
+
+### 7.6 NeoPixel (Addressable RGB)
 | Command | Parameters | Description | Response / Event |
 | :--- | :--- | :--- | :--- |
 | `NeoGPIO` | `<gpio> [count]` | Assign output pin and initialize LED strip with configurable pixel count (e.g. `NeoGPIO 19 7`, default 16) | `GOT NEOGPIO OK` |

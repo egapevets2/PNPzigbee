@@ -32,6 +32,7 @@
 #include "Expand8.h"
 #include "ssd1306.h"
 #include "Compass.h"
+#include "unipolarStep.h"
 #include "nvs_config.h"
 #include "serial_gateway.h"
 
@@ -83,7 +84,8 @@ static bool parse_text_for_local_action(const char *line, char *cmd, size_t cmd_
         I2Craw_is_cmd(first)       ||
         expand8_is_cmd(first)      ||
         ssd1306_is_cmd(first)      ||
-        compass_is_cmd(first))
+        compass_is_cmd(first)      ||
+        unipolarStep_is_cmd(first))
     {
         strncpy(cmd, first, cmd_len - 1);
         if (fields >= 2) *value1 = (int16_t)atoi(second);
@@ -378,6 +380,7 @@ static void app_msg_task(void *arg)
             else if (expand8_is_cmd(msg.cmd))      expand8_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             else if (ssd1306_is_cmd(msg.cmd))      ssd1306_execute_cmd(msg.cmd, msg.value, text_arg, text_message);
             else if (compass_is_cmd(msg.cmd))      compass_execute_cmd(msg.cmd, msg.value, text_message);
+            else if (unipolarStep_is_cmd(msg.cmd)) unipolarStep_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             // ----------------------
             else {
                 if (!text_message) mesh_zigbee_send_text("INVALID");
