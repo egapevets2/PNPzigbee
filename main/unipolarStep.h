@@ -58,6 +58,16 @@ void UnipolarStep_SetDelayMs(int ms);
 int UnipolarStep_GetDelayMs(void);
 
 /**
+ * @brief Set stepping mode: 0 = Full-step (dual-coil), 1 = Half-step (8-step), 2 = Wave drive (single-coil).
+ */
+void UnipolarStep_SetMode(int mode);
+
+/**
+ * @brief Get current stepping mode.
+ */
+int UnipolarStep_GetMode(void);
+
+/**
  * @brief Check if the stepper motor is currently moving.
  */
 bool UnipolarStep_IsBusy(void);

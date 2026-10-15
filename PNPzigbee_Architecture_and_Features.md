@@ -499,6 +499,7 @@ Supports 5-wire unipolar steppers (e.g. Adafruit 28BYJ-48 small reduction steppe
 | `UniiStepBkw`, `UniStepBkw` | `<steps>` | Step backward by N steps (full-step high-torque mode) | `GOT UNISTEPBKW <N> OK` / `[ACK]` |
 | `UniStepStop` | *none* | Immediately halt motion and power down all 4 coils | `GOT UNISTEPSTOP OK` / `[ACK]` |
 | `UniStepDelay` | `<ms>` | Set delay between steps in milliseconds (default 5ms) | `GOT UNISTEPDELAY OK` / `[ACK]` |
+| `UniStepMode` | `<mode>` | Set stepping mode: `0`=Full-step (dual-coil), `1`=Half-step (8-step), `2`=Wave drive (single-coil) | `GOT UNISTEPMODE <mode> OK` / `[ACK]` |
 
 ### 7.6 NeoPixel (Addressable RGB)
 | Command | Parameters | Description | Response / Event |
