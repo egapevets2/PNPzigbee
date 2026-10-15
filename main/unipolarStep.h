@@ -82,3 +82,4 @@ bool unipolarStep_execute_cmd(const char *cmd, int16_t value, int16_t value2, bo
 #endif
 
 #endif // UNIPOLAR_STEP_H
+
