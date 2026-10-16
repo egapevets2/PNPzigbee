@@ -115,24 +115,48 @@ static void unipolar_worker_task(void *arg)
     while (s_task_running) {
         if (s_target_steps != 0) {
             int dir = (s_target_steps > 0) ? 1 : -1;
+            int total_steps = (s_target_steps > 0) ? s_target_steps : -s_target_steps;
             int n_steps = get_seq_length();
-            
-            // Advance phase index
-            if (dir > 0) {
-                s_current_step = (s_current_step + 1) % n_steps;
-            } else {
-                s_current_step = (s_current_step + (n_steps - 1)) % n_steps;
-            }
-            
+
+            // Pre-energize current step for 15ms to magnetically lock rotor before stepping
             apply_current_step();
-            s_target_steps -= dir;
-            
-            delay_ms_precise(s_step_delay_ms);
-            
-            if (s_target_steps == 0) {
-                // Done with step move: power down coils to avoid motor heating
-                UnipolarStep_PowerDown();
+            delay_ms_precise(15);
+
+            int step_count = 0;
+            int ramp_len = (total_steps > 32) ? 16 : (total_steps / 4);
+            if (ramp_len < 2) ramp_len = 2;
+            int start_delay = s_step_delay_ms + 10;
+            if (start_delay < 15) start_delay = 15;
+
+            while (s_target_steps != 0 && s_task_running) {
+                // Advance phase index
+                if (dir > 0) {
+                    s_current_step = (s_current_step + 1) % n_steps;
+                } else {
+                    s_current_step = (s_current_step + (n_steps - 1)) % n_steps;
+                }
+
+                apply_current_step();
+                s_target_steps -= dir;
+                step_count++;
+
+                // Calculate step delay with soft-start acceleration and deceleration ramps
+                int current_delay = s_step_delay_ms;
+                int rem_steps = total_steps - step_count;
+
+                if (step_count < ramp_len) {
+                    int diff = start_delay - s_step_delay_ms;
+                    current_delay = s_step_delay_ms + (diff * (ramp_len - step_count)) / ramp_len;
+                } else if (rem_steps < ramp_len && rem_steps >= 0) {
+                    int diff = start_delay - s_step_delay_ms;
+                    current_delay = s_step_delay_ms + (diff * (ramp_len - rem_steps)) / ramp_len;
+                }
+
+                delay_ms_precise(current_delay);
             }
+
+            // Movement complete: power down coils to avoid heating and idle current
+            UnipolarStep_PowerDown();
         } else {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
