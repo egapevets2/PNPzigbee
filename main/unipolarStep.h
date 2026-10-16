@@ -51,8 +51,8 @@ void UnipolarStep_StepBkw(int steps);
 void UnipolarStep_Stop(void);
 
 /**
- * @brief Set delay between steps in milliseconds.
- * @param ms Step delay (e.g. 5-20 ms).
+ * @brief Set delay between steps in milliseconds (sets both Delay0 and Delay1).
+ * @param ms Step delay (e.g. 5-40 ms).
  */
 void UnipolarStep_SetDelayMs(int ms);
 
@@ -60,6 +60,37 @@ void UnipolarStep_SetDelayMs(int ms);
  * @brief Get current delay between steps in milliseconds.
  */
 int UnipolarStep_GetDelayMs(void);
+
+/**
+ * @brief Set start and end step delay in milliseconds (UnitStepDelay0 / UniStepDelay0).
+ */
+void UnipolarStep_SetDelay0Ms(int ms);
+
+/**
+ * @brief Get start/end step delay in milliseconds.
+ */
+int UnipolarStep_GetDelay0Ms(void);
+
+/**
+ * @brief Set constant velocity (cruise) step delay in milliseconds (UnitStepDelay1 / UniStepDelay1).
+ */
+void UnipolarStep_SetDelay1Ms(int ms);
+
+/**
+ * @brief Get constant velocity step delay in milliseconds.
+ */
+int UnipolarStep_GetDelay1Ms(void);
+
+/**
+ * @brief Set acceleration and deceleration ramp step count (AccelSteps).
+ *        0 = disabled (immediate cruise speed).
+ */
+void UnipolarStep_SetAccelSteps(int steps);
+
+/**
+ * @brief Get acceleration ramp step count.
+ */
+int UnipolarStep_GetAccelSteps(void);
 
 /**
  * @brief Set stepping mode: 0 = Arduino Stepper 4-wire (default), 1 = Half-step (8-step).

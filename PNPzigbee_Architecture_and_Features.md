@@ -496,10 +496,12 @@ Supports 5-wire unipolar steppers (e.g. Adafruit 28BYJ-48 small reduction steppe
 | Command | Parameters | Description | Response / Event |
 | :--- | :--- | :--- | :--- |
 | `SetupUnipolar` | *none* | Initialize 4-phase unipolar stepper driver on XIAO Pins 1, 2, 21, 22 | `SETUP UNIPOLAR OK` / `[ACK]` |
-| `UniStepFwd` | `<steps>` | Step forward by N steps (CW, Arduino Stepper core) | `GOT UNISTEPFWD <N> OK` / `[ACK]` |
-| `UniiStepBkw`, `UniStepBkw` | `<steps>` | Step backward by N steps (CCW, Arduino Stepper core) | `GOT UNISTEPBKW <N> OK` / `[ACK]` |
+| `UniStepFwd` | `<steps>` | Step forward by N constant-velocity steps (with accel/decel if enabled) | `GOT UNISTEPFWD <N> OK` / `[ACK]` |
+| `UniiStepBkw`, `UniStepBkw` | `<steps>` | Step backward by N constant-velocity steps (with accel/decel if enabled) | `GOT UNISTEPBKW <N> OK` / `[ACK]` |
 | `UniStepStop` | *none* | Immediately halt motion and power down all 4 coils | `GOT UNISTEPSTOP OK` / `[ACK]` |
-| `UniStepDelay0` | `<ms>` | Set delay between steps in milliseconds (default 10ms for reliable 28BYJ-48 pull-in torque) | `GOT UNISTEPDELAY0 OK` / `[ACK]` |
+| `UnitStepDelay0`, `UniStepDelay0` | `<ms>` | Set step delay at start and end of movement in ms (default 10ms) | `GOT UNISTEPDELAY0 <ms> OK` / `[ACK]` |
+| `UnitStepDelay1`, `UniStepDelay1` | `<ms>` | Set step delay during constant velocity cruise in ms (default 10ms) | `GOT UNISTEPDELAY1 <ms> OK` / `[ACK]` |
+| `AccelSteps`, `UniAccelSteps` | `<steps>` | Set ramp steps to accelerate from Delay0 to Delay1, and decelerate from Delay1 to Delay0 (0 = disabled) | `GOT ACCELSTEPS <steps> OK` / `[ACK]` |
 | `UniStepMode` | `<mode>` | Set stepping mode: `0`=Arduino Stepper 4-wire (default), `1`=Half-step (8-step) | `GOT UNISTEPMODE <mode> OK` / `[ACK]` |
 
 ### 7.6 NeoPixel (Addressable RGB)
