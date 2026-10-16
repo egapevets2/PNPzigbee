@@ -103,12 +103,41 @@ void NeoPixel_Update(void)
     ESP_LOGI(TAG, "NeoPixels physical strip updated from RAM (%d pixels)", current_num_pixels);
 }
 
+void NeoPixel_TurnOff(int index) 
+{
+    if (!led_strip) {
+        ESP_LOGW(TAG, "NeoPixel TurnOff called before setting GPIO (NeoGPIO)");
+        return;
+    }
+    if (index >= 0 && index < current_num_pixels) {
+        pixel_ram[index][0] = 0;
+        pixel_ram[index][1] = 0;
+        pixel_ram[index][2] = 0;
+        NeoPixel_Update();
+        ESP_LOGI(TAG, "NeoPixel %d turned OFF", index);
+    }
+}
+
+void NeoPixel_Clear(void)
+{
+    for (int i = 0; i < current_num_pixels; i++) {
+        pixel_ram[i][0] = 0;
+        pixel_ram[i][1] = 0;
+        pixel_ram[i][2] = 0;
+    }
+    if (led_strip) {
+        led_strip_clear(led_strip);
+        ESP_LOGI(TAG, "All NeoPixels cleared to black (%d pixels)", current_num_pixels);
+    }
+}
+
 bool neopixel_is_cmd(const char *cmd)
 {
     if (!cmd) return false;
     return (strcmp(cmd, "NeoGPIO") == 0 || strcmp(cmd, "NeoRED") == 0 ||
             strcmp(cmd, "NeoGREEN") == 0 || strcmp(cmd, "NeoBLUE") == 0 ||
-            strcmp(cmd, "NeoUpdate") == 0);
+            strcmp(cmd, "NeoUpdate") == 0 || strcmp(cmd, "NeoOff") == 0 ||
+            strcmp(cmd, "NeoClear") == 0);
 }
 
 bool neopixel_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool text_message)
@@ -133,6 +162,14 @@ bool neopixel_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool t
     } else if (strcmp(cmd, "NeoUpdate") == 0) {
         NeoPixel_Update();
         if (!text_message) mesh_zigbee_send_text("GOT NEOUPDATE OK");
+        return true;
+    } else if (strcmp(cmd, "NeoOff") == 0) {
+        NeoPixel_TurnOff(value);
+        if (!text_message) mesh_zigbee_send_text("GOT NEOOFF OK");
+        return true;
+    } else if (strcmp(cmd, "NeoClear") == 0) {
+        NeoPixel_Clear();
+        if (!text_message) mesh_zigbee_send_text("GOT NEOCLEAR OK");
         return true;
     }
     return false;

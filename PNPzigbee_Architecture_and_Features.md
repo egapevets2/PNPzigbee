@@ -321,8 +321,8 @@ Provides 4 general-purpose PWM channels (1–4):
 - **Dynamic Configuration:** Per-channel frequency, GPIO assignment, and linear slew rate limiting.
 
 #### 5. Addressable RGB Strip (`NeoPixel`)
-- **Driver:** ESP-IDF `led_strip` component (RMT / SPI backend).
-- **RAM Buffer:** Internal RGB frame buffer supporting indexed color updates (`NeoRED`, `NeoGREEN`, `NeoBLUE`) before atomically committing to hardware with `NeoUpdate`.
+- **Driver:** ESP-IDF `led_strip` component (RMT / SPI backend, WS2812/WS2812B compatible).
+- **RAM Buffer:** Internal RGB frame buffer supporting indexed color updates (`NeoRED`, `NeoGREEN`, `NeoBLUE`) committed with `NeoUpdate`, plus atomic per-pixel turn-off (`NeoOff <index>`) and full strip zeroing (`NeoClear`).
 
 ---
 
@@ -512,6 +512,8 @@ Supports 5-wire unipolar steppers (e.g. Adafruit 28BYJ-48 small reduction steppe
 | `NeoGREEN`| `<index> <val>` | Set green component (0–255) for pixel index in buffer | `GOT NEOGREEN OK` |
 | `NeoBLUE` | `<index> <val>` | Set blue component (0–255) for pixel index in buffer | `GOT NEOBLUE OK` |
 | `NeoUpdate`| *none* | Flush buffer to physical WS2812 strip | `GOT NEOUPDATE OK` |
+| `NeoOff` | `<index>` | Atomically zero RGB of pixel index in buffer and refresh strip immediately | `GOT NEOOFF OK` / `[ACK]` |
+| `NeoClear` | *none* | Atomically zero all pixels in buffer and clear physical strip immediately | `GOT NEOCLEAR OK` / `[ACK]` |
 
 ### 7.6 Analog & Digital I/O
 | Command | Parameters | Description | Response / Event |
