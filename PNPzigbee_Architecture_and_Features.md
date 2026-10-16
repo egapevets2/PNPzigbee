@@ -512,6 +512,9 @@ Supports 5-wire unipolar steppers (e.g. Adafruit 28BYJ-48 small reduction steppe
 | `NeoGREEN`| `<index> <val>` | Set green component (0–255) for pixel index in buffer | `GOT NEOGREEN OK` |
 | `NeoBLUE` | `<index> <val>` | Set blue component (0–255) for pixel index in buffer | `GOT NEOBLUE OK` |
 | `NeoUpdate`| *none* | Flush buffer to physical WS2812 strip | `GOT NEOUPDATE OK` |
+| `NeoRed`, `NeoSetRed` | `<index> <val>` | Set pixel index to pure Red (zeroes Green/Blue) and refreshes strip immediately | `GOT NEORED OK` / `[ACK]` |
+| `NeoGreen`, `NeoSetGreen` | `<index> <val>` | Set pixel index to pure Green (zeroes Red/Blue) and refreshes strip immediately | `GOT NEOGREEN OK` / `[ACK]` |
+| `NeoBlue`, `NeoSetBlue` | `<index> <val>` | Set pixel index to pure Blue (zeroes Red/Green) and refreshes strip immediately | `GOT NEOBLUE OK` / `[ACK]` |
 | `NeoOff` | `<index>` | Atomically zero RGB of pixel index in buffer and refresh strip immediately | `GOT NEOOFF OK` / `[ACK]` |
 | `NeoClear` | *none* | Atomically zero all pixels in buffer and clear physical strip immediately | `GOT NEOCLEAR OK` / `[ACK]` |
 

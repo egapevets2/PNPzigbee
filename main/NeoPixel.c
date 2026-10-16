@@ -131,13 +131,61 @@ void NeoPixel_Clear(void)
     }
 }
 
+void NeoPixel_SetOnlyRed(int index, int val)
+{
+    if (!led_strip) {
+        ESP_LOGW(TAG, "NeoPixel SetOnlyRed called before setting GPIO (NeoGPIO)");
+        return;
+    }
+    if (index >= 0 && index < current_num_pixels) {
+        pixel_ram[index][0] = (val > 255) ? 255 : (val < 0 ? 0 : val);
+        pixel_ram[index][1] = 0;
+        pixel_ram[index][2] = 0;
+        NeoPixel_Update();
+        ESP_LOGI(TAG, "NeoPixel %d set to RED=%d, GREEN=0, BLUE=0", index, pixel_ram[index][0]);
+    }
+}
+
+void NeoPixel_SetOnlyGreen(int index, int val)
+{
+    if (!led_strip) {
+        ESP_LOGW(TAG, "NeoPixel SetOnlyGreen called before setting GPIO (NeoGPIO)");
+        return;
+    }
+    if (index >= 0 && index < current_num_pixels) {
+        pixel_ram[index][0] = 0;
+        pixel_ram[index][1] = (val > 255) ? 255 : (val < 0 ? 0 : val);
+        pixel_ram[index][2] = 0;
+        NeoPixel_Update();
+        ESP_LOGI(TAG, "NeoPixel %d set to RED=0, GREEN=%d, BLUE=0", index, pixel_ram[index][1]);
+    }
+}
+
+void NeoPixel_SetOnlyBlue(int index, int val)
+{
+    if (!led_strip) {
+        ESP_LOGW(TAG, "NeoPixel SetOnlyBlue called before setting GPIO (NeoGPIO)");
+        return;
+    }
+    if (index >= 0 && index < current_num_pixels) {
+        pixel_ram[index][0] = 0;
+        pixel_ram[index][1] = 0;
+        pixel_ram[index][2] = (val > 255) ? 255 : (val < 0 ? 0 : val);
+        NeoPixel_Update();
+        ESP_LOGI(TAG, "NeoPixel %d set to RED=0, GREEN=0, BLUE=%d", index, pixel_ram[index][2]);
+    }
+}
+
 bool neopixel_is_cmd(const char *cmd)
 {
     if (!cmd) return false;
     return (strcmp(cmd, "NeoGPIO") == 0 || strcmp(cmd, "NeoRED") == 0 ||
             strcmp(cmd, "NeoGREEN") == 0 || strcmp(cmd, "NeoBLUE") == 0 ||
             strcmp(cmd, "NeoUpdate") == 0 || strcmp(cmd, "NeoOff") == 0 ||
-            strcmp(cmd, "NeoClear") == 0);
+            strcmp(cmd, "NeoClear") == 0 ||
+            strcmp(cmd, "NeoRed") == 0 || strcmp(cmd, "NeoSetRed") == 0 ||
+            strcmp(cmd, "NeoGreen") == 0 || strcmp(cmd, "NeoSetGreen") == 0 ||
+            strcmp(cmd, "NeoBlue") == 0 || strcmp(cmd, "NeoSetBlue") == 0);
 }
 
 bool neopixel_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool text_message)
@@ -170,6 +218,18 @@ bool neopixel_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool t
     } else if (strcmp(cmd, "NeoClear") == 0) {
         NeoPixel_Clear();
         if (!text_message) mesh_zigbee_send_text("GOT NEOCLEAR OK");
+        return true;
+    } else if (strcmp(cmd, "NeoRed") == 0 || strcmp(cmd, "NeoSetRed") == 0) {
+        NeoPixel_SetOnlyRed(value, value2);
+        if (!text_message) mesh_zigbee_send_text("GOT NEORED OK");
+        return true;
+    } else if (strcmp(cmd, "NeoGreen") == 0 || strcmp(cmd, "NeoSetGreen") == 0) {
+        NeoPixel_SetOnlyGreen(value, value2);
+        if (!text_message) mesh_zigbee_send_text("GOT NEOGREEN OK");
+        return true;
+    } else if (strcmp(cmd, "NeoBlue") == 0 || strcmp(cmd, "NeoSetBlue") == 0) {
+        NeoPixel_SetOnlyBlue(value, value2);
+        if (!text_message) mesh_zigbee_send_text("GOT NEOBLUE OK");
         return true;
     }
     return false;
