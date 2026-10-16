@@ -487,19 +487,20 @@ All commands can be sent as raw Zigbee APS text payloads, ZCL strings, or typed 
 | `Accel`, `Decel` | `<steps>` | Set ramp acceleration / deceleration step counts | `GOT ACCEL/DECEL OK` |
 
 ### 7.5 Unipolar Stepper Motor (Adafruit Small Reduction Stepper)
-Supports 5-wire unipolar steppers (e.g. Adafruit 28BYJ-48 small reduction stepper with 5V center-tap and gate-level N-channel MOSFET drivers):
-- **Coil A:** Orange (XIAO Pin 1), Pink (XIAO Pin 2)
-- **Coil B:** Yellow (XIAO Pin 21), Blue (XIAO Pin 22)
+Supports 5-wire unipolar steppers (e.g. Adafruit 28BYJ-48 small reduction stepper with 5V center-tap and gate-level N-channel MOSFET drivers), using the official Arduino `Stepper` library 4-wire sequence (`Stepper myStepper(200, 8, 9, 10, 11)`):
+- **Coil A:** Orange (XIAO Pin 1 $\leftrightarrow$ Arduino Pin 8), Pink (XIAO Pin 2 $\leftrightarrow$ Arduino Pin 9)
+- **Coil B:** Yellow (XIAO Pin 21 $\leftrightarrow$ Arduino Pin 10), Blue (XIAO Pin 22 $\leftrightarrow$ Arduino Pin 11)
+- **Step Sequence:** Step 0: Orange & Yellow; Step 1: Pink & Yellow; Step 2: Pink & Blue; Step 3: Orange & Blue.
 - Coils are automatically powered down when movement finishes to eliminate heat and idle current draw.
 
 | Command | Parameters | Description | Response / Event |
 | :--- | :--- | :--- | :--- |
 | `SetupUnipolar` | *none* | Initialize 4-phase unipolar stepper driver on XIAO Pins 1, 2, 21, 22 | `SETUP UNIPOLAR OK` / `[ACK]` |
-| `UniStepFwd` | `<steps>` | Step forward by N steps (full-step high-torque mode) | `GOT UNISTEPFWD <N> OK` / `[ACK]` |
-| `UniiStepBkw`, `UniStepBkw` | `<steps>` | Step backward by N steps (full-step high-torque mode) | `GOT UNISTEPBKW <N> OK` / `[ACK]` |
+| `UniStepFwd` | `<steps>` | Step forward by N steps (CW, Arduino Stepper core) | `GOT UNISTEPFWD <N> OK` / `[ACK]` |
+| `UniiStepBkw`, `UniStepBkw` | `<steps>` | Step backward by N steps (CCW, Arduino Stepper core) | `GOT UNISTEPBKW <N> OK` / `[ACK]` |
 | `UniStepStop` | *none* | Immediately halt motion and power down all 4 coils | `GOT UNISTEPSTOP OK` / `[ACK]` |
-| `UniStepDelay` | `<ms>` | Set delay between steps in milliseconds (default 5ms) | `GOT UNISTEPDELAY OK` / `[ACK]` |
-| `UniStepMode` | `<mode>` | Set stepping mode: `0`=Full-step (dual-coil), `1`=Half-step (8-step), `2`=Wave drive (single-coil) | `GOT UNISTEPMODE <mode> OK` / `[ACK]` |
+| `UniStepDelay` | `<ms>` | Set delay between steps in milliseconds (default 10ms for reliable 28BYJ-48 pull-in torque) | `GOT UNISTEPDELAY OK` / `[ACK]` |
+| `UniStepMode` | `<mode>` | Set stepping mode: `0`=Arduino Stepper 4-wire (default), `1`=Half-step (8-step) | `GOT UNISTEPMODE <mode> OK` / `[ACK]` |
 
 ### 7.6 NeoPixel (Addressable RGB)
 | Command | Parameters | Description | Response / Event |
