@@ -270,6 +270,7 @@ bool unipolarStep_is_cmd(const char *cmd)
             strcasecmp(cmd, "UniiStepBkw") == 0 ||
             strcasecmp(cmd, "UniStepBkw") == 0 ||
             strcasecmp(cmd, "UniStepStop") == 0 ||
+            strcasecmp(cmd, "UniStepDelay0") == 0 ||
             strcasecmp(cmd, "UniStepDelay") == 0 ||
             strcasecmp(cmd, "UniStepMode") == 0);
 }
@@ -302,9 +303,9 @@ bool unipolarStep_execute_cmd(const char *cmd, int16_t value, int16_t value2, bo
         UnipolarStep_Stop();
         if (!text_message) mesh_zigbee_send_text("GOT UNISTEPSTOP OK");
         return true;
-    } else if (strcasecmp(cmd, "UniStepDelay") == 0) {
+    } else if (strcasecmp(cmd, "UniStepDelay0") == 0 || strcasecmp(cmd, "UniStepDelay") == 0) {
         UnipolarStep_SetDelayMs(value);
-        if (!text_message) mesh_zigbee_send_text("GOT UNISTEPDELAY OK");
+        if (!text_message) mesh_zigbee_send_text("GOT UNISTEPDELAY0 OK");
         return true;
     } else if (strcasecmp(cmd, "UniStepMode") == 0) {
         UnipolarStep_SetMode(value);

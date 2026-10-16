@@ -499,7 +499,7 @@ Supports 5-wire unipolar steppers (e.g. Adafruit 28BYJ-48 small reduction steppe
 | `UniStepFwd` | `<steps>` | Step forward by N steps (CW, Arduino Stepper core) | `GOT UNISTEPFWD <N> OK` / `[ACK]` |
 | `UniiStepBkw`, `UniStepBkw` | `<steps>` | Step backward by N steps (CCW, Arduino Stepper core) | `GOT UNISTEPBKW <N> OK` / `[ACK]` |
 | `UniStepStop` | *none* | Immediately halt motion and power down all 4 coils | `GOT UNISTEPSTOP OK` / `[ACK]` |
-| `UniStepDelay` | `<ms>` | Set delay between steps in milliseconds (default 10ms for reliable 28BYJ-48 pull-in torque) | `GOT UNISTEPDELAY OK` / `[ACK]` |
+| `UniStepDelay0` | `<ms>` | Set delay between steps in milliseconds (default 10ms for reliable 28BYJ-48 pull-in torque) | `GOT UNISTEPDELAY0 OK` / `[ACK]` |
 | `UniStepMode` | `<mode>` | Set stepping mode: `0`=Arduino Stepper 4-wire (default), `1`=Half-step (8-step) | `GOT UNISTEPMODE <mode> OK` / `[ACK]` |
 
 ### 7.6 NeoPixel (Addressable RGB)
