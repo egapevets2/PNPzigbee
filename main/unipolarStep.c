@@ -13,63 +13,36 @@
 
 static const char *TAG = "UNIPOLAR_STEP";
 
-// Pin assignments
-static int s_pin_orange = UNIPOLAR_DEFAULT_PIN_ORANGE; // Phase 1 (Coil A1)
-static int s_pin_pink   = UNIPOLAR_DEFAULT_PIN_PINK;   // Phase 2 (Coil A2)
-static int s_pin_yellow = UNIPOLAR_DEFAULT_PIN_YELLOW; // Phase 3 (Coil B1)
-static int s_pin_blue   = UNIPOLAR_DEFAULT_PIN_BLUE;   // Phase 4 (Coil B2)
+// -----------------------------------------------------------------------------
+// Direct Port of the Official Arduino Stepper.h / Stepper.cpp Library for ESP-IDF
+//
+// Matches the Adafruit example constructor:
+//   Stepper myStepper(stepsPerRevolution, 8, 9, 10, 11);
+//
+// Pin mapping:
+//   motor_pin_1 (Arduino Pin 8)  = XIAO Pin 1  (Orange) - Coil A1
+//   motor_pin_2 (Arduino Pin 9)  = XIAO Pin 2  (Pink)   - Coil A2
+//   motor_pin_3 (Arduino Pin 10) = XIAO Pin 21 (Yellow) - Coil B1
+//   motor_pin_4 (Arduino Pin 11) = XIAO Pin 22 (Blue)   - Coil B2
+// -----------------------------------------------------------------------------
 
-// Step delay (ms)
+static int s_pin_orange = UNIPOLAR_DEFAULT_PIN_ORANGE; // motor_pin_1
+static int s_pin_pink   = UNIPOLAR_DEFAULT_PIN_PINK;   // motor_pin_2
+static int s_pin_yellow = UNIPOLAR_DEFAULT_PIN_YELLOW; // motor_pin_3
+static int s_pin_blue   = UNIPOLAR_DEFAULT_PIN_BLUE;   // motor_pin_4
+
+// Step delay in milliseconds (default 10ms for reliable pull-in torque)
 static int s_step_delay_ms = UNIPOLAR_DEFAULT_DELAY_MS;
 
-// Stepping mode: 0 = Full-step (2-coil), 1 = Half-step (8-step), 2 = Wave drive (1-coil)
+// Stepping mode: 0 = Arduino Stepper.cpp 4-wire (default), 1 = 8-step half-step
 static int s_mode = 0;
 
 // Stepper state
 static volatile int s_target_steps = 0;
-static int s_current_step = 0;
+static int s_step_number = 0;
 static bool s_initialized = false;
 static bool s_task_running = false;
 static TaskHandle_t s_task_handle = NULL;
-
-// -----------------------------------------------------------------------------
-// Adafruit Small Reduction Stepper (28BYJ-48 unipolar) Phase Sequences
-// Stator pole circular sequence: Orange (1) -> Pink (2) -> Yellow (3) -> Blue (4)
-// Output column mapping: [0]=Orange, [1]=Pink, [2]=Yellow, [3]=Blue
-// -----------------------------------------------------------------------------
-
-// Mode 0: 4-step full-step sequence (2 adjacent coils on for maximum torque)
-static const uint8_t s_full_step_seq[4][4] = {
-    { 1, 1, 0, 0 },  // Step 0: Orange (1) & Pink (2)
-    { 0, 1, 1, 0 },  // Step 1: Pink (2) & Yellow (3)
-    { 0, 0, 1, 1 },  // Step 2: Yellow (3) & Blue (4)
-    { 1, 0, 0, 1 }   // Step 3: Blue (4) & Orange (1)
-};
-
-// Mode 1: 8-step half-step sequence (smoothest motion)
-static const uint8_t s_half_step_seq[8][4] = {
-    { 1, 0, 0, 0 },  // Step 0: Orange
-    { 1, 1, 0, 0 },  // Step 1: Orange & Pink
-    { 0, 1, 0, 0 },  // Step 2: Pink
-    { 0, 1, 1, 0 },  // Step 3: Pink & Yellow
-    { 0, 0, 1, 0 },  // Step 4: Yellow
-    { 0, 0, 1, 1 },  // Step 5: Yellow & Blue
-    { 0, 0, 0, 1 },  // Step 6: Blue
-    { 1, 0, 0, 1 }   // Step 7: Blue & Orange
-};
-
-// Mode 2: 4-step wave drive (1 coil on for low power)
-static const uint8_t s_wave_step_seq[4][4] = {
-    { 1, 0, 0, 0 },  // Step 0: Orange
-    { 0, 1, 0, 0 },  // Step 1: Pink
-    { 0, 0, 1, 0 },  // Step 2: Yellow
-    { 0, 0, 0, 1 }   // Step 3: Blue
-};
-
-static inline int get_seq_length(void)
-{
-    return (s_mode == 1) ? 8 : 4;
-}
 
 static void delay_ms_precise(int ms)
 {
@@ -83,20 +56,64 @@ static void delay_ms_precise(int ms)
     }
 }
 
-static void apply_current_step(void)
+/**
+ * @brief Exact stepMotor logic from Arduino Stepper.cpp for 4-wire stepper
+ *
+ * Case 0 (1010): motor_pin_1=1, motor_pin_2=0, motor_pin_3=1, motor_pin_4=0 (Orange & Yellow)
+ * Case 1 (0110): motor_pin_1=0, motor_pin_2=1, motor_pin_3=1, motor_pin_4=0 (Pink & Yellow)
+ * Case 2 (0101): motor_pin_1=0, motor_pin_2=1, motor_pin_3=0, motor_pin_4=1 (Pink & Blue)
+ * Case 3 (1001): motor_pin_1=1, motor_pin_2=0, motor_pin_3=0, motor_pin_4=1 (Orange & Blue)
+ */
+static void stepMotor(int thisStep)
 {
-    const uint8_t *pat = NULL;
-    if (s_mode == 1) {
-        pat = s_half_step_seq[s_current_step % 8];
-    } else if (s_mode == 2) {
-        pat = s_wave_step_seq[s_current_step % 4];
-    } else {
-        pat = s_full_step_seq[s_current_step % 4];
+    switch (((thisStep % 4) + 4) % 4) {
+      case 0:  // 1010
+        gpio_set_level(s_pin_orange, 1);
+        gpio_set_level(s_pin_pink,   0);
+        gpio_set_level(s_pin_yellow, 1);
+        gpio_set_level(s_pin_blue,   0);
+        break;
+      case 1:  // 0110
+        gpio_set_level(s_pin_orange, 0);
+        gpio_set_level(s_pin_pink,   1);
+        gpio_set_level(s_pin_yellow, 1);
+        gpio_set_level(s_pin_blue,   0);
+        break;
+      case 2:  // 0101
+        gpio_set_level(s_pin_orange, 0);
+        gpio_set_level(s_pin_pink,   1);
+        gpio_set_level(s_pin_yellow, 0);
+        gpio_set_level(s_pin_blue,   1);
+        break;
+      case 3:  // 1001
+        gpio_set_level(s_pin_orange, 1);
+        gpio_set_level(s_pin_pink,   0);
+        gpio_set_level(s_pin_yellow, 0);
+        gpio_set_level(s_pin_blue,   1);
+        break;
     }
-    gpio_set_level(s_pin_orange, pat[0]);
-    gpio_set_level(s_pin_pink,   pat[1]);
-    gpio_set_level(s_pin_yellow, pat[2]);
-    gpio_set_level(s_pin_blue,   pat[3]);
+}
+
+/**
+ * @brief Optional 8-step half-step sequence for smooth motion
+ */
+static void stepMotorHalfStep(int thisStep)
+{
+    int s = ((thisStep % 8) + 8) % 8;
+    static const uint8_t s_half_step_table[8][4] = {
+        { 1, 0, 0, 0 },  // Step 0: Orange
+        { 1, 0, 1, 0 },  // Step 1: Orange & Yellow
+        { 0, 0, 1, 0 },  // Step 2: Yellow
+        { 0, 1, 1, 0 },  // Step 3: Pink & Yellow
+        { 0, 1, 0, 0 },  // Step 4: Pink
+        { 0, 1, 0, 1 },  // Step 5: Pink & Blue
+        { 0, 0, 0, 1 },  // Step 6: Blue
+        { 1, 0, 0, 1 }   // Step 7: Orange & Blue
+    };
+    gpio_set_level(s_pin_orange, s_half_step_table[s][0]);
+    gpio_set_level(s_pin_pink,   s_half_step_table[s][1]);
+    gpio_set_level(s_pin_yellow, s_half_step_table[s][2]);
+    gpio_set_level(s_pin_blue,   s_half_step_table[s][3]);
 }
 
 void UnipolarStep_PowerDown(void)
@@ -111,52 +128,38 @@ void UnipolarStep_PowerDown(void)
 
 static void unipolar_worker_task(void *arg)
 {
-    ESP_LOGI(TAG, "Unipolar worker task started");
+    ESP_LOGI(TAG, "Unipolar worker task started (Arduino Stepper core)");
     while (s_task_running) {
         if (s_target_steps != 0) {
             int dir = (s_target_steps > 0) ? 1 : -1;
-            int total_steps = (s_target_steps > 0) ? s_target_steps : -s_target_steps;
-            int n_steps = get_seq_length();
 
-            // Pre-energize current step for 15ms to magnetically lock rotor before stepping
-            apply_current_step();
-            delay_ms_precise(15);
-
-            int step_count = 0;
-            int ramp_len = (total_steps > 32) ? 16 : (total_steps / 4);
-            if (ramp_len < 2) ramp_len = 2;
-            int start_delay = s_step_delay_ms + 10;
-            if (start_delay < 15) start_delay = 15;
-
-            while (s_target_steps != 0 && s_task_running) {
-                // Advance phase index
-                if (dir > 0) {
-                    s_current_step = (s_current_step + 1) % n_steps;
-                } else {
-                    s_current_step = (s_current_step + (n_steps - 1)) % n_steps;
+            // Increment or decrement step number exactly like Arduino Stepper.cpp:
+            if (dir == 1) {
+                s_step_number++;
+                if (s_step_number >= 2000000000) {
+                    s_step_number = 0;
                 }
-
-                apply_current_step();
-                s_target_steps -= dir;
-                step_count++;
-
-                // Calculate step delay with soft-start acceleration and deceleration ramps
-                int current_delay = s_step_delay_ms;
-                int rem_steps = total_steps - step_count;
-
-                if (step_count < ramp_len) {
-                    int diff = start_delay - s_step_delay_ms;
-                    current_delay = s_step_delay_ms + (diff * (ramp_len - step_count)) / ramp_len;
-                } else if (rem_steps < ramp_len && rem_steps >= 0) {
-                    int diff = start_delay - s_step_delay_ms;
-                    current_delay = s_step_delay_ms + (diff * (ramp_len - rem_steps)) / ramp_len;
+            } else {
+                if (s_step_number <= 0) {
+                    s_step_number = 2000000000;
                 }
-
-                delay_ms_precise(current_delay);
+                s_step_number--;
             }
 
-            // Movement complete: power down coils to avoid heating and idle current
-            UnipolarStep_PowerDown();
+            if (s_mode == 1) {
+                stepMotorHalfStep(s_step_number);
+            } else {
+                stepMotor(s_step_number);
+            }
+
+            s_target_steps -= dir;
+
+            delay_ms_precise(s_step_delay_ms);
+
+            if (s_target_steps == 0) {
+                // Done stepping: power down coils to avoid heating and idle current
+                UnipolarStep_PowerDown();
+            }
         } else {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
@@ -192,7 +195,7 @@ void UnipolarStep_Init(void)
         xTaskCreate(unipolar_worker_task, "unipolar_task", 2048, NULL, 4, &s_task_handle);
     }
 
-    ESP_LOGI(TAG, "Unipolar Stepper initialized: Coil 1(Orange=Pin%d), Coil 2(Pink=Pin%d), Coil 3(Yellow=Pin%d), Coil 4(Blue=Pin%d)",
+    ESP_LOGI(TAG, "Unipolar Stepper initialized (Arduino Stepper core): Pin1(Orange)=%d, Pin2(Pink)=%d, Pin21(Yellow)=%d, Pin22(Blue)=%d",
              s_pin_orange, s_pin_pink, s_pin_yellow, s_pin_blue);
 }
 
@@ -245,10 +248,8 @@ int UnipolarStep_GetDelayMs(void)
 
 void UnipolarStep_SetMode(int mode)
 {
-    if (mode >= 0 && mode <= 2) {
-        s_mode = mode;
-        s_current_step = 0;
-    }
+    s_mode = (mode == 1) ? 1 : 0;
+    s_step_number = 0;
 }
 
 int UnipolarStep_GetMode(void)

@@ -8,16 +8,20 @@
 extern "C" {
 #endif
 
-// Default XIAO ESP32-C6 pin assignments for Adafruit Small Reduction Stepper:
-// Coil A: Orange (Pin 1), Pink (Pin 2)
-// Coil B: Yellow (Pin 21), Blue (Pin 22)
+// Default XIAO ESP32-C6 pin assignments matching the Adafruit Stepper constructor:
+// Stepper myStepper(stepsPerRevolution, 8, 9, 10, 11);
+// Pin 8  -> XIAO Pin 1  (Orange) - motor_pin_1 (Coil A1)
+// Pin 9  -> XIAO Pin 2  (Pink)   - motor_pin_2 (Coil A2)
+// Pin 10 -> XIAO Pin 21 (Yellow) - motor_pin_3 (Coil B1)
+// Pin 11 -> XIAO Pin 22 (Blue)   - motor_pin_4 (Coil B2)
 // Center taps connected to 5V; XIAO pins drive gate-level N-channel MOSFETs.
-#define UNIPOLAR_DEFAULT_PIN_ORANGE   1   // Coil A1 (Orange)
-#define UNIPOLAR_DEFAULT_PIN_PINK     2   // Coil A2 (Pink)
-#define UNIPOLAR_DEFAULT_PIN_YELLOW  21   // Coil B1 (Yellow)
-#define UNIPOLAR_DEFAULT_PIN_BLUE    22   // Coil B2 (Blue)
+#define UNIPOLAR_DEFAULT_PIN_ORANGE   1   // motor_pin_1 (Orange)
+#define UNIPOLAR_DEFAULT_PIN_PINK     2   // motor_pin_2 (Pink)
+#define UNIPOLAR_DEFAULT_PIN_YELLOW  21   // motor_pin_3 (Yellow)
+#define UNIPOLAR_DEFAULT_PIN_BLUE    22   // motor_pin_4 (Blue)
 
-#define UNIPOLAR_DEFAULT_DELAY_MS     5   // Default delay per step (ms)
+// Default step delay in ms (10ms = 100 steps/sec, safe & strong for 28BYJ-48)
+#define UNIPOLAR_DEFAULT_DELAY_MS    10
 
 /**
  * @brief Initialize GPIOs (pins 1, 2, 21, 22) and background stepping task.
@@ -30,13 +34,13 @@ void UnipolarStep_Init(void);
 void UnipolarStep_SetPins(int orange, int pink, int yellow, int blue);
 
 /**
- * @brief Step forward by N steps.
+ * @brief Step forward by N steps (exact Arduino Stepper.step(+N)).
  * @param steps Number of steps to advance.
  */
 void UnipolarStep_StepFwd(int steps);
 
 /**
- * @brief Step backward by N steps.
+ * @brief Step backward by N steps (exact Arduino Stepper.step(-N)).
  * @param steps Number of steps to reverse.
  */
 void UnipolarStep_StepBkw(int steps);
@@ -48,7 +52,7 @@ void UnipolarStep_Stop(void);
 
 /**
  * @brief Set delay between steps in milliseconds.
- * @param ms Step delay (e.g. 3-10 ms).
+ * @param ms Step delay (e.g. 5-20 ms).
  */
 void UnipolarStep_SetDelayMs(int ms);
 
@@ -58,7 +62,7 @@ void UnipolarStep_SetDelayMs(int ms);
 int UnipolarStep_GetDelayMs(void);
 
 /**
- * @brief Set stepping mode: 0 = Full-step (dual-coil), 1 = Half-step (8-step), 2 = Wave drive (single-coil).
+ * @brief Set stepping mode: 0 = Arduino Stepper 4-wire (default), 1 = Half-step (8-step).
  */
 void UnipolarStep_SetMode(int mode);
 
@@ -92,4 +96,3 @@ bool unipolarStep_execute_cmd(const char *cmd, int16_t value, int16_t value2, bo
 #endif
 
 #endif // UNIPOLAR_STEP_H
-
