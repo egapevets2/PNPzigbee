@@ -200,32 +200,31 @@ void motor_driver_start_task(void)
 
 void motor_driver_init(int mode, int freq) 
 {
-    if (motor_active) return;
-
     motor_mode = mode;
     motor_pwm_freq = freq > 0 ? freq : 5000;
 
-    if (!ledc_manager_alloc_timer(motor_pwm_freq, &motor_timer_num)) {
-        ESP_LOGE(TAG, "Motor Init Failed: No free timers");
-        mesh_zigbee_send_text("ERR: NO FREE TIMERS");
-        return;
-    }
-
-    if (motor_mode == 0) {
-        if (!ledc_manager_alloc_channel(&motor_ch1_num) || !ledc_manager_alloc_channel(&motor_ch2_num)) {
-            ESP_LOGE(TAG, "Motor Init Failed: No free channels");
-            mesh_zigbee_send_text("ERR: NO FREE CHANNELS");
+    if (!motor_active) {
+        if (!ledc_manager_alloc_timer(motor_pwm_freq, &motor_timer_num)) {
+            ESP_LOGE(TAG, "Motor Init Failed: No free timers");
+            mesh_zigbee_send_text("ERR: NO FREE TIMERS");
             return;
         }
-    } else {
-        if (!ledc_manager_alloc_channel(&motor_ch1_num)) {
-            ESP_LOGE(TAG, "Motor Init Failed: No free channels");
-            mesh_zigbee_send_text("ERR: NO FREE CHANNELS");
-            return;
-        }
-    }
 
-    motor_active = true;
+        if (motor_mode == 0) {
+            if (!ledc_manager_alloc_channel(&motor_ch1_num) || !ledc_manager_alloc_channel(&motor_ch2_num)) {
+                ESP_LOGE(TAG, "Motor Init Failed: No free channels");
+                mesh_zigbee_send_text("ERR: NO FREE CHANNELS");
+                return;
+            }
+        } else {
+            if (!ledc_manager_alloc_channel(&motor_ch1_num)) {
+                ESP_LOGE(TAG, "Motor Init Failed: No free channels");
+                mesh_zigbee_send_text("ERR: NO FREE CHANNELS");
+                return;
+            }
+        }
+        motor_active = true;
+    }
 
     ledc_timer_config_t ledc_timer = {
         .speed_mode       = LEDC_MODE,
@@ -237,6 +236,8 @@ void motor_driver_init(int mode, int freq)
     ledc_timer_config(&ledc_timer);
 
     if (motor_mode == 0) {
+        gpio_reset_pin(DRV8833_PIN_IN1);
+        gpio_set_direction(DRV8833_PIN_IN1, GPIO_MODE_OUTPUT);
         ledc_channel_config_t ledc_ch1 = {
             .speed_mode     = LEDC_MODE,
             .channel        = motor_ch1_num,
@@ -248,6 +249,8 @@ void motor_driver_init(int mode, int freq)
         };
         ledc_channel_config(&ledc_ch1);
 
+        gpio_reset_pin(DRV8833_PIN_IN2);
+        gpio_set_direction(DRV8833_PIN_IN2, GPIO_MODE_OUTPUT);
         ledc_channel_config_t ledc_ch2 = {
             .speed_mode     = LEDC_MODE,
             .channel        = motor_ch2_num,
@@ -261,6 +264,8 @@ void motor_driver_init(int mode, int freq)
         ESP_LOGI(TAG, "DRV8833 initialized on IN1:%d, IN2:%d at %d Hz", DRV8833_PIN_IN1, DRV8833_PIN_IN2, motor_pwm_freq);
     } else {
         // Cytron 10C: Pin 18 is PWM, Pin 20 is DIR
+        gpio_reset_pin(CYTRON_PIN_PWM);
+        gpio_set_direction(CYTRON_PIN_PWM, GPIO_MODE_OUTPUT);
         ledc_channel_config_t ledc_ch1 = {
             .speed_mode     = LEDC_MODE,
             .channel        = motor_ch1_num,
@@ -272,14 +277,8 @@ void motor_driver_init(int mode, int freq)
         };
         ledc_channel_config(&ledc_ch1);
 
-        gpio_config_t io_conf = {
-            .pin_bit_mask = (1ULL << CYTRON_PIN_DIR),
-            .mode = GPIO_MODE_OUTPUT,
-            .pull_up_en = GPIO_PULLUP_DISABLE,
-            .pull_down_en = GPIO_PULLDOWN_DISABLE,
-            .intr_type = GPIO_INTR_DISABLE,
-        };
-        gpio_config(&io_conf);
+        gpio_reset_pin(CYTRON_PIN_DIR);
+        gpio_set_direction(CYTRON_PIN_DIR, GPIO_MODE_INPUT_OUTPUT);
         gpio_set_level(CYTRON_PIN_DIR, 0);
         ESP_LOGI(TAG, "Cytron 10C initialized on PWM:%d, DIR:%d at %d Hz", CYTRON_PIN_PWM, CYTRON_PIN_DIR, motor_pwm_freq);
     }
