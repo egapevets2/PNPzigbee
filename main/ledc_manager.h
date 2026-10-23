@@ -28,6 +28,18 @@ bool ledc_manager_alloc_channel(ledc_channel_t *out_channel);
  */
 bool ledc_manager_alloc_timer(int freq_hz, ledc_timer_t *out_timer);
 
+/**
+ * @brief Free an allocated LEDC channel.
+ * @param channel The channel to release.
+ */
+void ledc_manager_free_channel(ledc_channel_t channel);
+
+/**
+ * @brief Free an allocated LEDC timer.
+ * @param timer The timer to release.
+ */
+void ledc_manager_free_timer(ledc_timer_t timer);
+
 #ifdef __cplusplus
 }
 #endif

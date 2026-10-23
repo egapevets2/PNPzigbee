@@ -87,6 +87,7 @@ static ledc_channel_t an_channel_num;
 static ledc_channel_t bp_channel_num;
 static ledc_channel_t bn_channel_num;
 static bool stepper_active = false;
+static bool channels_allocated = false;
 static TaskHandle_t s_stepper_task_handle = NULL;
 
 // --- Step Sequences (1 = coil active at StepPWMduty, 0 = off) ---
@@ -231,6 +232,10 @@ void Stepper_Deinit(void) {
     if (!stepper_active && s_stepper_task_handle == NULL) {
         return;
     }
+
+    // Mute all duty outputs while still active
+    apply_step(0, 0);
+
     stepper_active = false;
     target_steps = 0;
     steps_taken = 0;
@@ -241,9 +246,6 @@ void Stepper_Deinit(void) {
         s_stepper_task_handle = NULL;
         vTaskDelete(h);
     }
-
-    // Mute all duty outputs
-    apply_step(0, 0);
 
     // Reset pins and release from bound list
     for (int i = 0; i < 4; i++) {
@@ -264,6 +266,24 @@ void Stepper_Init(void) {
     // Cleanly deactivate unipolar stepper if it was running on the shared pins
     UnipolarStep_Deinit();
 
+    if (!channels_allocated) {
+        if (!ledc_manager_alloc_timer(pwm_freq, &stepper_timer_num)) {
+            ESP_LOGE(TAG, "Stepper Init Failed: No free timers");
+            mesh_zigbee_send_text("ERR: NO FREE TIMERS");
+            return;
+        }
+
+        if (!ledc_manager_alloc_channel(&ap_channel_num) || !ledc_manager_alloc_channel(&an_channel_num) ||
+            !ledc_manager_alloc_channel(&bp_channel_num) || !ledc_manager_alloc_channel(&bn_channel_num)) {
+            ESP_LOGE(TAG, "Stepper Init Failed: No free channels");
+            mesh_zigbee_send_text("ERR: NO FREE CHANNELS");
+            return;
+        }
+        channels_allocated = true;
+    }
+
+    stepper_active = true;
+
     ledc_timer_config_t ledc_timer = {
         .speed_mode       = LEDC_LOW_SPEED_MODE,
         .timer_num        = stepper_timer_num,
@@ -271,33 +291,6 @@ void Stepper_Init(void) {
         .freq_hz          = pwm_freq, 
         .clk_cfg          = LEDC_AUTO_CLK
     };
-
-    if (stepper_active) {
-        ledc_timer_config(&ledc_timer);
-        rebind_all_stepper_channels();
-        if (s_stepper_task_handle == NULL) {
-            xTaskCreate(stepper_task, "stepper_task", 2048, NULL, 5, &s_stepper_task_handle);
-        }
-        ESP_LOGI(TAG, "Stepper re-bound pins: Ap=%d, An=%d, Bp=%d, Bn=%d", ap_pin, an_pin, bp_pin, bn_pin);
-        return;
-    }
-
-    if (!ledc_manager_alloc_timer(pwm_freq, &stepper_timer_num)) {
-        ESP_LOGE(TAG, "Stepper Init Failed: No free timers");
-        mesh_zigbee_send_text("ERR: NO FREE TIMERS");
-        return;
-    }
-
-    if (!ledc_manager_alloc_channel(&ap_channel_num) || !ledc_manager_alloc_channel(&an_channel_num) ||
-        !ledc_manager_alloc_channel(&bp_channel_num) || !ledc_manager_alloc_channel(&bn_channel_num)) {
-        ESP_LOGE(TAG, "Stepper Init Failed: No free channels");
-        mesh_zigbee_send_text("ERR: NO FREE CHANNELS");
-        return;
-    }
-
-    stepper_active = true;
-
-    ledc_timer.timer_num = stepper_timer_num;
     ledc_timer_config(&ledc_timer);
 
     rebind_all_stepper_channels();

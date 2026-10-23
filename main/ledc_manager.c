@@ -78,3 +78,22 @@ bool ledc_manager_alloc_timer(int freq_hz, ledc_timer_t *out_timer)
     ESP_LOGE(TAG, "FAILED to allocate LEDC Timer (All %d in use by other frequencies)", MAX_TIMERS);
     return false;
 }
+
+void ledc_manager_free_channel(ledc_channel_t channel)
+{
+    if ((int)channel >= 0 && (int)channel < MAX_CHANNELS)
+    {
+        channel_in_use[(int)channel] = false;
+        ESP_LOGI(TAG, "Freed LEDC Channel %d", (int)channel);
+    }
+}
+
+void ledc_manager_free_timer(ledc_timer_t timer)
+{
+    if ((int)timer >= 0 && (int)timer < MAX_TIMERS)
+    {
+        timer_in_use[(int)timer] = false;
+        timer_frequencies[(int)timer] = 0;
+        ESP_LOGI(TAG, "Freed LEDC Timer %d", (int)timer);
+    }
+}
