@@ -29,6 +29,11 @@ extern "C" {
 void UnipolarStep_Init(void);
 
 /**
+ * @brief Cleanly deinitialize GPIOs, cancel motion, and terminate background stepping task.
+ */
+void UnipolarStep_Deinit(void);
+
+/**
  * @brief Configure custom GPIO pins if needed.
  */
 void UnipolarStep_SetPins(int orange, int pink, int yellow, int blue);

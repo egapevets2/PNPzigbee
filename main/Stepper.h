@@ -7,6 +7,7 @@
 #include <stdbool.h>
 
 void Stepper_Init(void);
+void Stepper_Deinit(void);
 
 // Pin configurations
 void Stepper_SetApGPIO(int pin);

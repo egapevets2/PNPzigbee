@@ -39,6 +39,7 @@
  */
 
 #include "unipolarStep.h"
+#include "Stepper.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -267,8 +268,44 @@ static void unipolar_worker_task(void *arg)
     vTaskDelete(NULL);
 }
 
+void UnipolarStep_Deinit(void)
+{
+    if (!s_initialized && s_task_handle == NULL) {
+        return;
+    }
+
+    s_stop_requested = true;
+    s_task_running = false;
+
+    if (s_task_handle != NULL) {
+        TaskHandle_t h = s_task_handle;
+        s_task_handle = NULL;
+        vTaskDelete(h);
+    }
+
+    if (s_move_queue) {
+        xQueueReset(s_move_queue);
+    }
+
+    UnipolarStep_PowerDown();
+
+    gpio_reset_pin(s_pin_orange);
+    gpio_reset_pin(s_pin_pink);
+    gpio_reset_pin(s_pin_yellow);
+    gpio_reset_pin(s_pin_blue);
+
+    s_initialized = false;
+    s_move_active = false;
+    s_stop_requested = false;
+
+    ESP_LOGI(TAG, "Unipolar Stepper deinitialized");
+}
+
 void UnipolarStep_Init(void)
 {
+    // Cleanly deactivate bipolar stepper if it was running on the shared pins
+    Stepper_Deinit();
+
     gpio_reset_pin(s_pin_orange);
     gpio_reset_pin(s_pin_pink);
     gpio_reset_pin(s_pin_yellow);
@@ -287,7 +324,7 @@ void UnipolarStep_Init(void)
 
     s_initialized = true;
 
-    if (!s_task_running) {
+    if (!s_task_running || s_task_handle == NULL) {
         s_task_running = true;
         // Priority 4 allows app_msg_task (priority 5) to preempt when messages arrive
         xTaskCreate(unipolar_worker_task, "unipolar_task", 3072, NULL, 4, &s_task_handle);

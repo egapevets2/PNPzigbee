@@ -45,6 +45,7 @@
  */
 
 #include "Stepper.h"
+#include "unipolarStep.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/ledc.h"
@@ -86,6 +87,7 @@ static ledc_channel_t an_channel_num;
 static ledc_channel_t bp_channel_num;
 static ledc_channel_t bn_channel_num;
 static bool stepper_active = false;
+static TaskHandle_t s_stepper_task_handle = NULL;
 
 // --- Step Sequences (1 = coil active at StepPWMduty, 0 = off) ---
 
@@ -113,6 +115,7 @@ static const uint8_t (*current_sequence)[4] = full_step_seq;
 
 static void configure_ledc_channel(int pin, ledc_channel_t channel) {
     if (pin < 0) return;
+    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
     ledc_channel_config_t ledc_channel_cfg = {
         .speed_mode     = LEDC_LOW_SPEED_MODE,
         .channel        = channel,
@@ -224,9 +227,57 @@ static void rebind_all_stepper_channels(void) {
     bound_pins[3] = bn_pin;
 }
 
+void Stepper_Deinit(void) {
+    if (!stepper_active && s_stepper_task_handle == NULL) {
+        return;
+    }
+    stepper_active = false;
+    target_steps = 0;
+    steps_taken = 0;
+    steps_remaining = 0;
+
+    if (s_stepper_task_handle != NULL) {
+        TaskHandle_t h = s_stepper_task_handle;
+        s_stepper_task_handle = NULL;
+        vTaskDelete(h);
+    }
+
+    // Mute all duty outputs
+    apply_step(0, 0);
+
+    // Reset pins and release from bound list
+    for (int i = 0; i < 4; i++) {
+        if (bound_pins[i] >= 0) {
+            gpio_reset_pin(bound_pins[i]);
+            bound_pins[i] = -1;
+        }
+    }
+    if (ap_pin >= 0) gpio_reset_pin(ap_pin);
+    if (an_pin >= 0) gpio_reset_pin(an_pin);
+    if (bp_pin >= 0) gpio_reset_pin(bp_pin);
+    if (bn_pin >= 0) gpio_reset_pin(bn_pin);
+
+    ESP_LOGI(TAG, "Bipolar Stepper deinitialized");
+}
+
 void Stepper_Init(void) {
+    // Cleanly deactivate unipolar stepper if it was running on the shared pins
+    UnipolarStep_Deinit();
+
+    ledc_timer_config_t ledc_timer = {
+        .speed_mode       = LEDC_LOW_SPEED_MODE,
+        .timer_num        = stepper_timer_num,
+        .duty_resolution  = LEDC_TIMER_8_BIT,
+        .freq_hz          = pwm_freq, 
+        .clk_cfg          = LEDC_AUTO_CLK
+    };
+
     if (stepper_active) {
+        ledc_timer_config(&ledc_timer);
         rebind_all_stepper_channels();
+        if (s_stepper_task_handle == NULL) {
+            xTaskCreate(stepper_task, "stepper_task", 2048, NULL, 5, &s_stepper_task_handle);
+        }
         ESP_LOGI(TAG, "Stepper re-bound pins: Ap=%d, An=%d, Bp=%d, Bn=%d", ap_pin, an_pin, bp_pin, bn_pin);
         return;
     }
@@ -246,18 +297,14 @@ void Stepper_Init(void) {
 
     stepper_active = true;
 
-    ledc_timer_config_t ledc_timer = {
-        .speed_mode       = LEDC_LOW_SPEED_MODE,
-        .timer_num        = stepper_timer_num,
-        .duty_resolution  = LEDC_TIMER_8_BIT,
-        .freq_hz          = pwm_freq, 
-        .clk_cfg          = LEDC_AUTO_CLK
-    };
+    ledc_timer.timer_num = stepper_timer_num;
     ledc_timer_config(&ledc_timer);
 
     rebind_all_stepper_channels();
 
-    xTaskCreate(stepper_task, "stepper_task", 2048, NULL, 5, NULL);
+    if (s_stepper_task_handle == NULL) {
+        xTaskCreate(stepper_task, "stepper_task", 2048, NULL, 5, &s_stepper_task_handle);
+    }
     ESP_LOGI(TAG, "Stepper Init. Pins: Ap=%d, An=%d, Bp=%d, Bn=%d | Freq: %dHz, Duty: %d%%",
              ap_pin, an_pin, bp_pin, bn_pin, pwm_freq, pwm_duty_percent);
 }
