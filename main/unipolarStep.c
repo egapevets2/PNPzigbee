@@ -1,3 +1,43 @@
+/*
+ * unipolarStep.c - 5-Wire Unipolar Stepper Motor Driver (28BYJ-48 / ULN2003)
+ *
+ * Purpose:
+ *   Drives 5-wire unipolar stepper motors (28BYJ-48 with ULN2003 Darlington array) on Orange=GPIO 1,
+ *   Pink=GPIO 2, Yellow=GPIO 21, Blue=GPIO 0. Direct ESP-IDF port of the official Arduino Stepper
+ *   library, enhanced with FreeRTOS background queue execution and trapezoidal acceleration/deceleration
+ *   profiling between starting delay (Delay0) and cruise delay (Delay1).
+ *
+ * Supported Commands:
+ *   SetupUnipolar
+ *     Initializes GPIO pins, motion queue, and background stepping worker task.
+ *     Replies "SETUP UNIPOLAR OK".
+ *
+ *   UniStepFwd <steps>
+ *     - steps: Number of steps to move forward with ramp profiling.
+ *     Replies "GOT UNISTEPFWD <steps> OK".
+ *
+ *   UniStepBkw <steps> / UniiStepBkw <steps>
+ *     - steps: Number of steps to move backward with ramp profiling.
+ *     Replies "GOT UNISTEPBKW <steps> OK".
+ *
+ *   UniStepStop
+ *     Immediately aborts active movement and turns off all 4 coil pins to prevent heating.
+ *     Replies "GOT UNISTEPSTOP OK".
+ *
+ *   UniStepDelay0 <ms> / UnitStepDelay0 <ms> / UniStepDelay <ms>
+ *     - ms: Starting and ending step period in milliseconds for ramp profile (default 20ms).
+ *
+ *   UniStepDelay1 <ms> / UnitStepDelay1 <ms>
+ *     - ms: Constant velocity cruise step period in milliseconds (default 2ms).
+ *
+ *   AccelSteps <steps> / UniAccelSteps <steps>
+ *     - steps: Number of steps to smoothly ramp between Delay0 and Delay1 (0 = constant speed).
+ *
+ *   UniStepMode <0|1>
+ *     - 0: Standard 4-step sequence (matches Arduino Stepper.cpp).
+ *     - 1: 8-step half-step sequence for smoother motion.
+ */
+
 #include "unipolarStep.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,7 +51,6 @@
 #include "esp_timer.h"
 #include "esp_rom_sys.h"
 #include "mesh_zigbee.h"
-#include "i2c_manager.h"
 
 static const char *TAG = "UNIPOLAR_STEP";
 
@@ -26,7 +65,7 @@ static const char *TAG = "UNIPOLAR_STEP";
 //   motor_pin_1 (Arduino Pin 8)  = XIAO Pin 1  (Orange) - Coil A1
 //   motor_pin_2 (Arduino Pin 9)  = XIAO Pin 2  (Pink)   - Coil A2
 //   motor_pin_3 (Arduino Pin 10) = XIAO Pin 21 (Yellow) - Coil B1
-//   motor_pin_4 (Arduino Pin 11) = XIAO Pin 22 (Blue)   - Coil B2
+//   motor_pin_4 (Arduino Pin 11) = XIAO Pin 0  (Blue)   - Coil B2
 // -----------------------------------------------------------------------------
 
 static int s_pin_orange = UNIPOLAR_DEFAULT_PIN_ORANGE; // motor_pin_1
@@ -230,12 +269,6 @@ static void unipolar_worker_task(void *arg)
 
 void UnipolarStep_Init(void)
 {
-    // If I2C was active on pin 22, release it first so GPIO22 is a standard output
-    if (i2c_manager_is_initialized()) {
-        ESP_LOGI(TAG, "Releasing I2C bus to free GPIO22 for Unipolar Stepper");
-        i2c_manager_deinit_bus();
-    }
-
     gpio_reset_pin(s_pin_orange);
     gpio_reset_pin(s_pin_pink);
     gpio_reset_pin(s_pin_yellow);
@@ -260,7 +293,7 @@ void UnipolarStep_Init(void)
         xTaskCreate(unipolar_worker_task, "unipolar_task", 3072, NULL, 4, &s_task_handle);
     }
 
-    ESP_LOGI(TAG, "Unipolar Stepper initialized (Arduino Stepper core + Accel/Decel): Pin1(Orange)=%d, Pin2(Pink)=%d, Pin21(Yellow)=%d, Pin22(Blue)=%d",
+    ESP_LOGI(TAG, "Unipolar Stepper initialized (Arduino Stepper core + Accel/Decel): Pin1(Orange)=%d, Pin2(Pink)=%d, Pin21(Yellow)=%d, Pin0(Blue)=%d",
              s_pin_orange, s_pin_pink, s_pin_yellow, s_pin_blue);
 }
 

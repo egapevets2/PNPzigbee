@@ -32,12 +32,18 @@ bool compass_is_initialized(void);
 esp_err_t compass_read_mag(int16_t *x, int16_t *y, int16_t *z);
 
 /**
+ * @brief Background FreeRTOS task that monitors 3-axis (X, Y, Z) magnetic field
+ * against signed [LowMag, HighMag] and -[LowMag, HighMag] hysteresis thresholds.
+ */
+void compass_task(void *arg);
+
+/**
  * @brief Command router checks.
  */
 bool compass_is_cmd(const char *cmd);
 
 /**
- * @brief Executes compass commands (SetupCompass, GetCompass, ReadCompass).
+ * @brief Executes compass commands (SetupCompass, GetCompass, ReadCompass, LowMag, HighMag).
  */
 bool compass_execute_cmd(const char *cmd, int16_t value, bool text_message);
 

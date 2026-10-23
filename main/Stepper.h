@@ -32,7 +32,6 @@ void Stepper_SetDecel(int steps);
 // NEW: Stepping Modes
 void Stepper_SetModeFullStep(void);
 void Stepper_SetModeHalfStep(void);
-void Stepper_SetModeMicroStep(void);
 
 // Command routers
 bool stepper_is_cmd(const char *cmd);

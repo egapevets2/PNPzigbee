@@ -13,18 +13,18 @@ extern "C" {
 // Pin 8  -> XIAO Pin 1  (Orange) - motor_pin_1 (Coil A1)
 // Pin 9  -> XIAO Pin 2  (Pink)   - motor_pin_2 (Coil A2)
 // Pin 10 -> XIAO Pin 21 (Yellow) - motor_pin_3 (Coil B1)
-// Pin 11 -> XIAO Pin 22 (Blue)   - motor_pin_4 (Coil B2)
+// Pin 11 -> XIAO Pin 0  (Blue)   - motor_pin_4 (Coil B2)
 // Center taps connected to 5V; XIAO pins drive gate-level N-channel MOSFETs.
 #define UNIPOLAR_DEFAULT_PIN_ORANGE   1   // motor_pin_1 (Orange)
 #define UNIPOLAR_DEFAULT_PIN_PINK     2   // motor_pin_2 (Pink)
 #define UNIPOLAR_DEFAULT_PIN_YELLOW  21   // motor_pin_3 (Yellow)
-#define UNIPOLAR_DEFAULT_PIN_BLUE    22   // motor_pin_4 (Blue)
+#define UNIPOLAR_DEFAULT_PIN_BLUE     0   // motor_pin_4 (Blue)
 
 // Default step delay in ms (10ms = 100 steps/sec, safe & strong for 28BYJ-48)
 #define UNIPOLAR_DEFAULT_DELAY_MS    10
 
 /**
- * @brief Initialize GPIOs (pins 1, 2, 21, 22) and background stepping task.
+ * @brief Initialize GPIOs (pins 1, 2, 21, 0) and background stepping task.
  */
 void UnipolarStep_Init(void);
 

@@ -1,4 +1,40 @@
-// File: apds9930.c
+/*
+ * apds9930.c - APDS-9930 Digital Proximity & Ambient Light Sensor Driver
+ *
+ * Purpose:
+ *   Interfaces with the Broadcom / Avago APDS-9930 optical proximity sensor over the
+ *   shared I2C bus (address 0x39). Features background polling, dual-threshold hysteresis
+ *   event generation ("Object Detected", "Object Removed") sent upstream to the coordinator,
+ *   one-shot proximity reads, LED emitter pulse count adjustments, and continuous streaming.
+ *
+ * Supported Commands:
+ *   SetupProximity
+ *     Initializes APDS-9930 I2C registers and starts background monitoring task.
+ *     Replies "SETUP PROX OK" or "SETUP PROX FAIL".
+ *
+ *   ReadProximity / ReadProx
+ *     Reads instantaneous 16-bit proximity measurement count.
+ *     Replies "PROXval <val>" (e.g. "PROXval 420") or "PROXval ERROR".
+ *
+ *   StreamProx <0|1>
+ *     - 1 to enable, 0 to disable continuous streaming of proximity values every 100ms.
+ *     Replies "PROX STREAM ON" or "PROX STREAM OFF".
+ *
+ *   Npulses <count>
+ *     - count: Number of IR LED proximity pulses (1..256, default 8).
+ *     Reconfigures optical emitter pulse count and writes register PPULSE.
+ *     Replies "GOT NPULSES OK".
+ *
+ *   ProxHighThrsh <val> / ProxHighThresh <val> / UpperThresh <val>
+ *     - val: Proximity count threshold (default 500).
+ *     Sets upper threshold for hysteresis object detection.
+ *     Replies "GOT PROXHIGHTHRSH OK".
+ *
+ *   ProxLowThrsh <val> / ProxLowThresh <val> / LowerThresh <val>
+ *     - val: Proximity count threshold (default 200).
+ *     Sets lower threshold for hysteresis object detection.
+ *     Replies "GOT PROXLOWTHRSH OK".
+ */
 
 #include <stdio.h>
 #include <string.h>
@@ -22,8 +58,8 @@ static const char *TAG = "APDS9930";
 
 // Variables now owned natively by the driver!
 volatile int16_t Npulses = 8;
-volatile int16_t UpperThresh = 200;
-volatile int16_t LowerThresh = 150;
+volatile int16_t UpperThresh = 500;
+volatile int16_t LowerThresh = 200;
 static bool g_stream_prox = false;
 
 esp_err_t apds9930_config(void)
@@ -169,12 +205,12 @@ void proximity_task(void *arg)
 
             if (state == CarDetected && OLDstate == NothingThere)
             {
-                snprintf(localMsgBuf, sizeof(localMsgBuf), "Car Detected %d", timestamp);
+                snprintf(localMsgBuf, sizeof(localMsgBuf), "Car Detected %u", proximity);
                 SendTheMessage(localMsgBuf);
             }
             else if (state == NothingThere && OLDstate == CarDetected)
             {
-                snprintf(localMsgBuf, sizeof(localMsgBuf), "Car removed %d", timestamp);
+                snprintf(localMsgBuf, sizeof(localMsgBuf), "Car removed %u", proximity);
                 SendTheMessage(localMsgBuf);
             }
 
@@ -192,35 +228,47 @@ void proximity_task(void *arg)
 // --- Command Routing ---
 bool proximity_is_cmd(const char *cmd) {
     if (!cmd) return false;
-    return (strcmp(cmd, "StreamProx") == 0 || strcmp(cmd, "Npulses") == 0 || strcmp(cmd, "UpperThresh") == 0 || 
-            strcmp(cmd, "LowerThresh") == 0 || strcmp(cmd, "SetupProximity") == 0 ||
-            strcmp(cmd, "ReadProximity") == 0 || strcmp(cmd, "ReadProx") == 0);
+    return (strcasecmp(cmd, "StreamProx") == 0 ||
+            strcasecmp(cmd, "Npulses") == 0 ||
+            strcasecmp(cmd, "ProxHighThrsh") == 0 ||
+            strcasecmp(cmd, "ProxLowThrsh") == 0 ||
+            strcasecmp(cmd, "ProxHighThresh") == 0 ||
+            strcasecmp(cmd, "ProxLowThresh") == 0 ||
+            strcasecmp(cmd, "UpperThresh") == 0 ||
+            strcasecmp(cmd, "LowerThresh") == 0 ||
+            strcasecmp(cmd, "SetupProximity") == 0 ||
+            strcasecmp(cmd, "ReadProximity") == 0 ||
+            strcasecmp(cmd, "ReadProx") == 0);
 }
 
 bool proximity_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool text_message) {
-    if (strcmp(cmd, "StreamProx") == 0) {
+    if (strcasecmp(cmd, "StreamProx") == 0) {
         g_stream_prox = (value != 0);
         char resp[32];
         snprintf(resp, sizeof(resp), "PROX STREAM %s", g_stream_prox ? "ON" : "OFF");
         mesh_zigbee_send_text(resp);
         return true;
-    } else if (strcmp(cmd, "Npulses") == 0) {
+    } else if (strcasecmp(cmd, "Npulses") == 0) {
         Npulses = value;
         ESP_LOGI(TAG, "Npulses set to %d. Reconfiguring sensor...", Npulses);
         apds9930_config();
-        mesh_zigbee_send_text("GOT NPULSES OK");
+        if (!text_message) mesh_zigbee_send_text("GOT NPULSES OK");
         return true;
-    } else if (strcmp(cmd, "UpperThresh") == 0) {
+    } else if (strcasecmp(cmd, "ProxHighThrsh") == 0 ||
+               strcasecmp(cmd, "ProxHighThresh") == 0 ||
+               strcasecmp(cmd, "UpperThresh") == 0) {
         UpperThresh = value;
-        ESP_LOGI(TAG, "UpperThresh set to %d", UpperThresh);
-        mesh_zigbee_send_text("GOT UPPERTHRESH OK");
+        ESP_LOGI(TAG, "ProxHighThrsh (UpperThresh) set to %d", UpperThresh);
+        if (!text_message) mesh_zigbee_send_text("GOT PROXHIGHTHRSH OK");
         return true;
-    } else if (strcmp(cmd, "LowerThresh") == 0) {
+    } else if (strcasecmp(cmd, "ProxLowThrsh") == 0 ||
+               strcasecmp(cmd, "ProxLowThresh") == 0 ||
+               strcasecmp(cmd, "LowerThresh") == 0) {
         LowerThresh = value;
-        ESP_LOGI(TAG, "LowerThresh set to %d", LowerThresh);
-        mesh_zigbee_send_text("GOT LOWERTHRESH OK");
+        ESP_LOGI(TAG, "ProxLowThrsh (LowerThresh) set to %d", LowerThresh);
+        if (!text_message) mesh_zigbee_send_text("GOT PROXLOWTHRSH OK");
         return true;
-    } else if (strcmp(cmd, "ReadProximity") == 0 || strcmp(cmd, "ReadProx") == 0) {
+    } else if (strcasecmp(cmd, "ReadProximity") == 0 || strcasecmp(cmd, "ReadProx") == 0) {
         if (dev_handle == NULL) {
             mesh_zigbee_send_text("PROX NOT READY");
             return true;
@@ -234,7 +282,7 @@ bool proximity_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool 
         }
         mesh_zigbee_send_text(resp);
         return true;
-    } else if (strcmp(cmd, "SetupProximity") == 0) {
+    } else if (strcasecmp(cmd, "SetupProximity") == 0) {
         if (apds9930_init() == ESP_OK) {
             static bool s_task_created = false;
             if (!s_task_created) {

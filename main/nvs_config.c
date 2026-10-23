@@ -1,3 +1,39 @@
+/*
+ * nvs_config.c - Non-Volatile Storage (NVS) Configuration & Workbench CLI
+ *
+ * Purpose:
+ *   Manages persistent non-volatile configuration parameters stored in the 'mesh_cfg'
+ *   NVS partition, including device role, logical node name, RF channel, coordinator MAC,
+ *   TX output power, and 802.11 Long-Range PHY mode. Also implements the interactive
+ *   serial workbench provisioning console.
+ *
+ * Supported Commands (Workbench Console):
+ *   ShowConfig / config
+ *     Displays current configuration table including role, name, channel, coordinator MAC,
+ *     TX power, and Long-Range PHY mode.
+ *
+ *   SetRole <Coordinator | EndDevice <NodeName> | Unprovisioned>
+ *     Sets node role and identity, commits to NVS, and schedules device reboot after 1 second.
+ *
+ *   SetName <NewName>
+ *     Assigns a persistent logical node name (up to 16 characters).
+ *
+ *   SetChannel <1-14>
+ *     Sets the fixed 2.4GHz Wi-Fi / ESP-NOW channel (1..14).
+ *
+ *   SetTxPower <qdbm>
+ *     Sets Wi-Fi transmission power in quarter-dBm units (8..84, corresponding to +2 dBm to +21 dBm).
+ *
+ *   SetLR <0|1> / SetLongRange <0|1>
+ *     Enables (1) or disables (0) 802.11 Long-Range PHY mode (250 kbps DSSS).
+ *
+ *   FactoryReset
+ *     Erases the 'mesh_cfg' NVS namespace and restarts node in unprovisioned state.
+ *
+ *   help / ?
+ *     Prints available workbench console commands and parameter formats.
+ */
+
 #include "nvs_config.h"
 
 #include <stdio.h>

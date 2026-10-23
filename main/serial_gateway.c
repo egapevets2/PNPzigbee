@@ -1,3 +1,40 @@
+/*
+ * serial_gateway.c - Coordinator Serial Gateway & Central Host Interface
+ *
+ * Purpose:
+ *   Operates as the central USB serial gateway on the Coordinator node, interfacing between
+ *   the PC host (e.g. test runner, command terminal) and the remote mesh network.
+ *   - Routes commands from PC host to specific named end devices (e.g. "Kitchen blink 3").
+ *   - Receives upstream replies and notifications from end devices and streams them to host.
+ *   - Coordinates network topology queries, discovery sweeps, and link-quality reports.
+ *
+ * Supported Commands (Coordinator Host Interface):
+ *   <TargetDevice> <cmd> [args...]
+ *     - Routes the command line directly to the named destination end device (e.g. "Kitchen blink 3").
+ *
+ *   GiveNetworkReport
+ *     Initiates an active network survey: unicasts PING frames to all registered nodes in the
+ *     routing table, computes real-time RSSI/LQI round-trips, and outputs a formatted topology summary.
+ *
+ *   PingNetwork
+ *     Unicasts PING to all active nodes in the routing table to verify bidirectional connectivity.
+ *
+ *   ResetNetwork
+ *     Clears the coordinator routing table and broadcasts a Layer 2 DISCOVER_ALL sweep to rebuild topology.
+ *
+ *   ResetCoordinator
+ *     Reboots the coordinator hardware.
+ *
+ *   scan
+ *     Triggers a local 2.4GHz Wi-Fi environment scan and prints all detected access points.
+ *
+ *   rf <pwr> <sel>
+ *     Directly sets the coordinator hardware RF switch pins (GPIO 3 PWR, GPIO 14 SEL).
+ *
+ *   help / ?
+ *     Prints available coordinator host commands.
+ */
+
 #include "serial_gateway.h"
 
 #include <stdbool.h>

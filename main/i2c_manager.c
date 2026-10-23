@@ -1,3 +1,16 @@
+/*
+ * i2c_manager.c - Centralized Shared I2C Master Bus Resource Manager
+ *
+ * Purpose:
+ *   Manages the lifecycle and shared access to the ESP32-C6 I2C master bus (ESP-IDF
+ *   i2c_master driver) on SDA=GPIO 8 and SCL=GPIO 9 at 100 kHz. Peripherals dynamically
+ *   attach and release device handles onto this shared bus (SSD1306, APDS9930, VL53L1X,
+ *   Compass, PCF8574, I2Craw) without pin conflicts.
+ *
+ * Supported Commands:
+ *   None (Internal Subsystem/Driver)
+ */
+
 #include "i2c_manager.h"
 #include "esp_log.h"
 #include "driver/gpio.h"

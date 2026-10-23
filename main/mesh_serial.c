@@ -1,3 +1,15 @@
+/*
+ * mesh_serial.c - Hardware Serial Console & USB JTAG Transport
+ *
+ * Purpose:
+ *   Provides low-level serial I/O abstraction for the local operator console and test
+ *   automation harness, utilizing the ESP32-C6 native USB Serial/JTAG controller (with optional
+ *   fallback to hardware UART). Handles non-blocking single-byte reads and formatted string output.
+ *
+ * Supported Commands:
+ *   None (Internal Subsystem/Driver)
+ */
+
 #include "mesh_serial.h"
 
 #include <stdio.h>

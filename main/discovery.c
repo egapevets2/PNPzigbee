@@ -1,3 +1,29 @@
+/*
+ * discovery.c - Dynamic Node Discovery, Routing Table & Topology Management
+ *
+ * Purpose:
+ *   Implements dynamic plug-and-play discovery and link quality tracking for the ESP-NOW
+ *   mesh network without hardcoded MAC addresses.
+ *   - End Devices: Broadcast a HELLO frame on boot and every 1 second until acknowledged
+ *     by the coordinator with HELLO_ACK; maintain background keepalive/heartbeats.
+ *   - Coordinator: Dynamically registers nodes into an in-memory routing table mapping
+ *     logical names to 6-byte MAC addresses, 16-bit short addresses, RSSI/LQI metrics,
+ *     and last-seen timestamps. Emits broadcast DISCOVER_ALL sweeps upon command or network reset.
+ *
+ * Supported Commands (Network Protocol & Control Frames):
+ *   HELLO
+ *     - Announcement / heartbeat frame sent by End Devices to Coordinator containing node name.
+ *
+ *   HELLO_ACK
+ *     - Unicast response sent by Coordinator confirming registration and assigning short address.
+ *
+ *   DISCOVER_ALL
+ *     - Layer 2 broadcast sweep frame sent by Coordinator prompting immediate HELLO replies from all nodes.
+ *
+ *   (User-facing CLI commands interacting with discovery such as 'GiveNetworkReport', 'PingNetwork',
+ *    and 'ResetNetwork' are handled via serial_gateway.c).
+ */
+
 #include "discovery.h"
 
 #include <stdio.h>
@@ -13,6 +39,7 @@
 #include "esp_now.h"
 
 #include "nvs_config.h"
+#include "mesh_zigbee.h"
 
 static const char *TAG = "DISCOVERY";
 
@@ -281,7 +308,7 @@ bool discovery_coord_handle_rx(const uint8_t *src_mac, const espnow_frame_t *fra
 
         ensure_peer_exists(src_mac);
         esp_now_send(src_mac, (const uint8_t *)&ack, sizeof(ack));
-        ESP_LOGI(TAG, "Dispatched HELLO_ACK to '%s' (%02X:%02X:%02X:%02X:%02X:%02X, LQI=%d)",
+        ESP_LOGD(TAG, "Dispatched HELLO_ACK to '%s' (%02X:%02X:%02X:%02X:%02X:%02X, LQI=%d)",
                  frame->source, src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5], lqi);
         return true;
     }
@@ -315,6 +342,7 @@ static void discovery_node_task(void *arg)
         strncpy(frame.text, DISCOVERY_CMD_HELLO, sizeof(frame.text) - 1);
 
         ensure_peer_exists(s_broadcast_mac);
+        mesh_zigbee_set_last_tx_to_coordinator(false);
         esp_now_send(s_broadcast_mac, (const uint8_t *)&frame, sizeof(frame));
         ESP_LOGI(TAG, "Dispatched Layer 1 HELLO broadcast (attempt %d, backoff %lums)",
                  (int)(i + 1), (unsigned long)backoff_delays_ms[i]);
@@ -322,25 +350,33 @@ static void discovery_node_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(backoff_delays_ms[i]));
     }
 
-    // Steady-state background heartbeat (every 30 seconds)
+    // Steady-state background heartbeat (polls every 500ms, sends probe if no coordinator contact for >= 1000ms)
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(30000));
+        vTaskDelay(pdMS_TO_TICKS(500));
 
-        espnow_frame_t frame = {0};
-        strncpy(frame.source, nvs_config_get_name(), sizeof(frame.source) - 1);
-        strncpy(frame.target, "coordinator", sizeof(frame.target) - 1);
-        strncpy(frame.cmd, DISCOVERY_CMD_HELLO, sizeof(frame.cmd) - 1);
-        strncpy(frame.text, DISCOVERY_CMD_HELLO, sizeof(frame.text) - 1);
+        TickType_t now = xTaskGetTickCount();
+        TickType_t last_contact = mesh_zigbee_get_last_coord_contact_tick();
+        TickType_t elapsed = (last_contact == 0) ? pdMS_TO_TICKS(10000) : (now - last_contact);
 
-        uint8_t coord_mac[6] = {0};
-        if (nvs_config_get_coord_mac(coord_mac) == ESP_OK && coord_mac[0] != 0xFF) {
-            ensure_peer_exists(coord_mac);
-            esp_now_send(coord_mac, (const uint8_t *)&frame, sizeof(frame));
-        } else {
-            ensure_peer_exists(s_broadcast_mac);
-            esp_now_send(s_broadcast_mac, (const uint8_t *)&frame, sizeof(frame));
+        if (elapsed >= pdMS_TO_TICKS(1000)) {
+            espnow_frame_t frame = {0};
+            strncpy(frame.source, nvs_config_get_name(), sizeof(frame.source) - 1);
+            strncpy(frame.target, "coordinator", sizeof(frame.target) - 1);
+            strncpy(frame.cmd, DISCOVERY_CMD_HELLO, sizeof(frame.cmd) - 1);
+            strncpy(frame.text, DISCOVERY_CMD_HELLO, sizeof(frame.text) - 1);
+
+            uint8_t coord_mac[6] = {0};
+            if (nvs_config_get_coord_mac(coord_mac) == ESP_OK && coord_mac[0] != 0xFF) {
+                ensure_peer_exists(coord_mac);
+                mesh_zigbee_set_last_tx_to_coordinator(true);
+                esp_now_send(coord_mac, (const uint8_t *)&frame, sizeof(frame));
+            } else {
+                ensure_peer_exists(s_broadcast_mac);
+                mesh_zigbee_set_last_tx_to_coordinator(false);
+                esp_now_send(s_broadcast_mac, (const uint8_t *)&frame, sizeof(frame));
+            }
+            ESP_LOGD(TAG, "Dispatched background heartbeat HELLO");
         }
-        ESP_LOGD(TAG, "Dispatched background heartbeat HELLO");
     }
 }
 
@@ -374,6 +410,7 @@ bool discovery_node_handle_rx(const uint8_t *src_mac, const espnow_frame_t *fram
 
         nvs_config_set_coord_mac(src_mac);
         ensure_peer_exists(src_mac);
+        mesh_zigbee_record_coordinator_contact();
 
         // Immediate unicast HELLO response
         espnow_frame_t reply = {0};
@@ -382,6 +419,7 @@ bool discovery_node_handle_rx(const uint8_t *src_mac, const espnow_frame_t *fram
         strncpy(reply.cmd, DISCOVERY_CMD_HELLO, sizeof(reply.cmd) - 1);
         strncpy(reply.text, DISCOVERY_CMD_HELLO, sizeof(reply.text) - 1);
 
+        mesh_zigbee_set_last_tx_to_coordinator(true);
         esp_now_send(src_mac, (const uint8_t *)&reply, sizeof(reply));
         ESP_LOGI(TAG, "Replied to DISCOVER_ALL sweep with unicast HELLO");
         s_node_announced = true;
@@ -398,6 +436,7 @@ bool discovery_node_handle_rx(const uint8_t *src_mac, const espnow_frame_t *fram
         nvs_config_set_coord_mac(src_mac);
         ensure_peer_exists(src_mac);
         s_node_announced = true;
+        mesh_zigbee_record_coordinator_contact();
         return true;
     }
 
@@ -405,6 +444,7 @@ bool discovery_node_handle_rx(const uint8_t *src_mac, const espnow_frame_t *fram
     if (strcasecmp(frame->source, "coordinator") == 0) {
         nvs_config_set_coord_mac(src_mac);
         ensure_peer_exists(src_mac);
+        mesh_zigbee_record_coordinator_contact();
     }
 
     return false;

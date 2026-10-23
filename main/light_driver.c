@@ -1,5 +1,14 @@
-// File: light_driver.c
-// ... (keep includes except driver/ledc.h) ...
+/*
+ * light_driver.c - Onboard Status LED Driver
+ *
+ * Purpose:
+ *   Controls the Seeed Studio XIAO ESP32-C6 onboard yellow user LED on GPIO 15 (active-low).
+ *   Provides initialization and low-level digital ON/OFF control functions invoked by
+ *   the system blink commands and visual network indicators.
+ *
+ * Supported Commands:
+ *   None (Internal Subsystem/Driver; user commands 'blink', 'on', 'off' are dispatched in esp_zb_light.c)
+ */
 
 #include "esp_log.h"
 #include "led_strip.h"

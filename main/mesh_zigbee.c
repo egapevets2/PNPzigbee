@@ -1,3 +1,30 @@
+/*
+ * mesh_zigbee.c - ESP-NOW Wireless Mesh Communications & Radio Engine
+ *
+ * Purpose:
+ *   Provides the core wireless mesh transport layer over 2.4GHz ESP-NOW. Manages radio
+ *   initialization (Wi-Fi Station mode, Long-Range PHY, custom frame headers), RF antenna
+ *   switch hardware (GPIO 3 = PWR [0=ON], GPIO 14 = SEL [0=Ceramic, 1=External U.FL]),
+ *   packet queuing (FreeRTOS RX/TX queues), Link Quality Indication (LQI), and coordinator
+ *   connectivity heartbeat / severance tracking.
+ *
+ * Supported Commands (Interactive Console / Workbench):
+ *   rf <pwr> <sel>
+ *     - pwr: RF switch power state (0 = active/powered ON, 1 = unpowered).
+ *     - sel: Antenna path selection (0 = onboard ceramic antenna, 1 = external U.FL connector).
+ *     Directly configures the Seeed Studio XIAO ESP32-C6 RF switch pins.
+ *
+ *   bcast <text>
+ *     - text: String payload.
+ *     Broadcasts unencrypted text packet to all nodes on the active RF channel.
+ *
+ *   sniff <0|1>
+ *     - 1 to enable, 0 to disable Wi-Fi promiscuous packet sniffer for debugging.
+ *
+ *   scan
+ *     Performs active 2.4GHz Wi-Fi scan and lists all discovered access points, SSIDs, and channels.
+ */
+
 #include "mesh_zigbee.h"
 
 #include <stdio.h>
@@ -79,6 +106,41 @@ static QueueHandle_t s_mesh_tx_queue = NULL;
 static int16_t s_last_rx_lqi = 255;
 static bool s_joined = true;
 
+static volatile bool s_coordinator_connected = false;
+static volatile TickType_t s_last_coord_contact_tick = 0;
+static volatile int s_consecutive_send_fails = 0;
+static volatile bool s_last_tx_to_coordinator = false;
+
+void mesh_zigbee_record_coordinator_contact(void)
+{
+    s_coordinator_connected = true;
+    s_last_coord_contact_tick = xTaskGetTickCount();
+    s_consecutive_send_fails = 0;
+}
+
+void mesh_zigbee_set_last_tx_to_coordinator(bool is_coord)
+{
+    s_last_tx_to_coordinator = is_coord;
+}
+
+TickType_t mesh_zigbee_get_last_coord_contact_tick(void)
+{
+    return s_last_coord_contact_tick;
+}
+
+bool mesh_zigbee_is_coordinator_connected(void)
+{
+    if (!s_coordinator_connected) {
+        return false;
+    }
+    // If more than 2000ms have elapsed since last confirmed coordinator contact, mark severed
+    if ((xTaskGetTickCount() - s_last_coord_contact_tick) > pdMS_TO_TICKS(2000)) {
+        s_coordinator_connected = false;
+        return false;
+    }
+    return true;
+}
+
 // Dynamic coordinator MAC (learned via Tri-Layer Discovery)
 static uint8_t s_coordinator_mac[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 static bool s_coordinator_known = false;
@@ -130,6 +192,9 @@ static void espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *
             memcpy(s_coordinator_mac, recv_info->src_addr, ESP_NOW_ETH_ALEN);
             ensure_peer_exists(s_coordinator_mac);
             s_coordinator_known = true;
+            mesh_zigbee_record_coordinator_contact();
+        } else if (s_coordinator_known && memcmp(recv_info->src_addr, s_coordinator_mac, ESP_NOW_ETH_ALEN) == 0) {
+            mesh_zigbee_record_coordinator_contact();
         }
 
         // Verify target filtering against dynamic local node name
@@ -174,7 +239,20 @@ static void espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *
 
 static void espnow_send_cb(const esp_now_send_info_t *tx_info, esp_now_send_status_t status)
 {
-    ESP_LOGI(TAG, "ESP-NOW TX cb: status=%d (%s)", status, status == ESP_NOW_SEND_SUCCESS ? "SUCCESS" : "FAIL");
+    ESP_LOGD(TAG, "ESP-NOW TX cb: status=%d (%s)", status, status == ESP_NOW_SEND_SUCCESS ? "SUCCESS" : "FAIL");
+    if (status == ESP_NOW_SEND_SUCCESS) {
+        s_consecutive_send_fails = 0;
+        if (s_last_tx_to_coordinator) {
+            mesh_zigbee_record_coordinator_contact();
+        }
+    } else {
+        if (s_last_tx_to_coordinator) {
+            s_consecutive_send_fails++;
+            if (s_consecutive_send_fails >= 2) {
+                s_coordinator_connected = false;
+            }
+        }
+    }
 }
 
 static void mesh_tx_task(void *arg)
@@ -197,6 +275,8 @@ static void mesh_tx_task(void *arg)
             const uint8_t *dest_mac = (strcasecmp(frame.target, "broadcast") == 0) ? s_broadcast_mac :
                                       (s_coordinator_known ? s_coordinator_mac : s_broadcast_mac);
             ensure_peer_exists(dest_mac);
+
+            s_last_tx_to_coordinator = (s_coordinator_known && memcmp(dest_mac, s_coordinator_mac, ESP_NOW_ETH_ALEN) == 0);
 
             ESP_LOGI(TAG, "TX task: sending to %02x:%02x:%02x:%02x:%02x:%02x text='%s'",
                      dest_mac[0], dest_mac[1], dest_mac[2], dest_mac[3], dest_mac[4], dest_mac[5],
@@ -346,7 +426,7 @@ bool mesh_zigbee_receive(mesh_msg_t *msg, TickType_t timeout)
 
 bool mesh_zigbee_is_joined(void)
 {
-    return s_joined;
+    return mesh_zigbee_is_coordinator_connected();
 }
 
 bool mesh_zigbee_send_broadcast(const char *text)

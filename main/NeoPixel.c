@@ -1,3 +1,51 @@
+/*
+ * NeoPixel.c - WS2812 / NeoPixel Addressable LED Strip Driver
+ *
+ * Purpose:
+ *   Drives WS2812 / WS2812B addressable RGB LED strips using the ESP32-C6 RMT (Remote Control)
+ *   peripheral. Supports individual pixel color buffering in RAM with deferred batch update,
+ *   bulk clearing, and immediate single-channel color presets.
+ *
+ * Supported Commands:
+ *   NeoGPIO <gpio> [num_pixels]
+ *     - gpio: GPIO pin connected to NeoPixel data input line.
+ *     - num_pixels: Number of pixels in the strip (1..100, default 16).
+ *     Initializes RMT driver and clears all pixels to black.
+ *
+ *   NeoRED <index> <val>
+ *     - index: Pixel zero-based index (0..num_pixels-1).
+ *     - val: Red brightness (0..255).
+ *     Buffers red channel in RAM; requires 'NeoUpdate' to display.
+ *
+ *   NeoGREEN <index> <val>
+ *     - index: Pixel zero-based index (0..num_pixels-1).
+ *     - val: Green brightness (0..255).
+ *     Buffers green channel in RAM; requires 'NeoUpdate' to display.
+ *
+ *   NeoBLUE <index> <val>
+ *     - index: Pixel zero-based index (0..num_pixels-1).
+ *     - val: Blue brightness (0..255).
+ *     Buffers blue channel in RAM; requires 'NeoUpdate' to display.
+ *
+ *   NeoUpdate
+ *     Flushes the entire RAM buffer to the physical LED strip via RMT.
+ *
+ *   NeoOff <index>
+ *     - index: Pixel zero-based index to turn OFF (0,0,0) and immediately update strip.
+ *
+ *   NeoClear
+ *     Clears all pixels in RAM and physically turns off the entire strip.
+ *
+ *   NeoRed <index> <val> / NeoSetRed <index> <val>
+ *     - Sets pixel <index> to RED=<val>, GREEN=0, BLUE=0 and immediately refreshes strip.
+ *
+ *   NeoGreen <index> <val> / NeoSetGreen <index> <val>
+ *     - Sets pixel <index> to RED=0, GREEN=<val>, BLUE=0 and immediately refreshes strip.
+ *
+ *   NeoBlue <index> <val> / NeoSetBlue <index> <val>
+ *     - Sets pixel <index> to RED=0, GREEN=0, BLUE=<val> and immediately refreshes strip.
+ */
+
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"

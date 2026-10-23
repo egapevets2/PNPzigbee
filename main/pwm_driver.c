@@ -1,4 +1,32 @@
-// File: pwm_driver.c
+/*
+ * pwm_driver.c - Multi-Channel General Purpose PWM Subsystem
+ *
+ * Purpose:
+ *   Provides up to 4 independent general-purpose PWM channels (pwm1..pwm4) using the ESP32-C6
+ *   LEDC peripheral. Features on-demand resource allocation via ledc_manager, runtime PWM frequency
+ *   configuration, dynamic GPIO pin assignment, and software slew-rate rate limiting (pwm_slew_task).
+ *
+ * Supported Commands:
+ *   SetupPWM1 .. SetupPWM4
+ *     Initializes specified PWM channel and requests hardware timer and channel from ledc_manager.
+ *     Replies "SETUP PWM<ch> OK".
+ *
+ *   pwm1 .. pwm4 <duty>
+ *     - duty: Target PWM duty cycle (0..255).
+ *     Sets commanded duty cycle; slews smoothly if a slew rate is active.
+ *
+ *   pwmFreq1 .. pwmFreq4 <freq>
+ *     - freq: Switching frequency in Hz (e.g. 50, 1000, 25000).
+ *     Reconfigures LEDC hardware timer frequency for the channel.
+ *
+ *   pwmSlew1 .. pwmSlew4 <rate>
+ *     - rate: Slew rate in duty units per second (0 = instantaneous step).
+ *     Sets maximum rate of duty cycle change.
+ *
+ *   pwmPin1 .. pwmPin4 <gpio>
+ *     - gpio: Target GPIO pin number.
+ *     Rebinds the LEDC channel output to the specified GPIO pin.
+ */
 
 #include "pwm_driver.h"
 #include "esp_log.h"

@@ -1,3 +1,29 @@
+/*
+ * ssd1306.c - SSD1306 128x64 OLED Display Driver
+ *
+ * Purpose:
+ *   Drives monochrome 128x64 I2C OLED displays over the shared I2C bus (default 7-bit address 0x3C).
+ *   Features a 1024-byte in-memory framebuffer, Adafruit GFX compatible proportional vector fonts
+ *   (FreeMono 9pt, 12pt, 18pt, 24pt), automatic line clearing, text wrapping, and vertical cursor scrolling.
+ *
+ * Supported Commands:
+ *   SetupDisp [addr] / SetupSSD1306 [addr]
+ *     - addr: 7-bit I2C address (default 0x3C / 60).
+ *     Initializes OLED controller and display configuration registers.
+ *     Replies "SETUP DISP OK" or "SETUP DISP FAIL".
+ *
+ *   ClearDisp
+ *     Clears display framebuffer to black, resets vertical text cursor to line 0 (top), and refreshes OLED.
+ *     Replies "CLEARDISP OK" or "CLEARDISP FAIL".
+ *
+ *   print <size_pt> <text>
+ *     - size_pt: Font point size (9, 12, 18, or 24; default 12).
+ *     - text: String payload to display.
+ *     Clears current text line, renders text at active cursor baseline, pushes framebuffer to OLED,
+ *     and advances cursor down by the font's vertical line height (wraps to top on overflow).
+ *     Replies "PRINT OK" or "PRINT FAIL".
+ */
+
 #include "ssd1306.h"
 
 #include <stdio.h>

@@ -7,6 +7,8 @@
 extern "C" {
 #endif
 
+extern float RFlossThrottle;
+
 /**
  * @brief Initializes the LEDC peripherals for the motor driver.
  * @param mode 0 for DRV8833 (2-wire PWM), 1 for Cytron 10C (PWM/DIR)
@@ -15,10 +17,9 @@ extern "C" {
 void motor_driver_init(int mode, int freq);
 
 /**
- * @brief Sets the slew rate for motor speed changes.
- * @param rate The slew rate in speed units per second. (0 = instant)
+ * @brief Starts the background motor slew and RF-loss throttle monitor task.
  */
-void motor_set_slew(int rate);
+void motor_driver_start_task(void);
 
 /**
  * @brief Sets the slew rate for motor speed changes.

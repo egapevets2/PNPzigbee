@@ -1,17 +1,32 @@
 /*
-I2Craw.c
-This gives access to the coordinator to put writes onto the i2c bus,
-by sending commnands.
-
-sets the chip address for the device you are going to write or read
-rawI2CchipADR 21
-
-rawI2Cwr  17 197
-writes I2C value 197 to register address 17 of the device with I2C addr "rawI2CchipADR"
-
-rawI2Crd 2 
-reads the value in register address 2 of the device with I2C addr "rawI2CchipADR"
-*/
+ * I2Craw.c - Direct Low-Level I2C Register Access & Bus Scanner
+ *
+ * Purpose:
+ *   Provides low-level access to the shared I2C bus for the coordinator or automated test harness.
+ *   Allows dynamically binding to any 7-bit slave address, writing arbitrary register/data bytes,
+ *   reading registers, and scanning the entire 7-bit address range for responding devices.
+ *
+ * Supported Commands:
+ *   rawI2CchipADR <addr>
+ *     - addr: 7-bit I2C target slave address (e.g. 21 or 0x15).
+ *     Sets the active target I2C address for subsequent raw read and write operations.
+ *     Replies "I2C CHIP ADR OK" or "I2C CHIP ADR FAIL".
+ *
+ *   rawI2Cwr <reg> <val>
+ *     - reg: Target device 8-bit register address.
+ *     - val: 8-bit value to write.
+ *     Transmits 2-byte sequence [reg, val] to the current target chip address.
+ *     Replies "I2C WR OK" or "I2C WR FAIL".
+ *
+ *   rawI2Crd <reg>
+ *     - reg: Target device 8-bit register address.
+ *     Writes register address and reads back 1 data byte from the target chip address.
+ *     Replies "I2Cval <reg> <val>".
+ *
+ *   scanI2C / I2Cscan
+ *     Probes all 7-bit I2C addresses from 0x08 to 0x77 with a 20ms timeout.
+ *     Replies with all responding addresses, e.g. "I2C SCAN: 0x0D(13) 0x3C(60)" or "I2C SCAN: NONE".
+ */
 
 #include <stdio.h>
 #include <string.h>

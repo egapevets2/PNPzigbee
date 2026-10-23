@@ -1,28 +1,29 @@
-// VL53L1X laser distance sensor
 /*
-The VL53L1X is an advanced, miniature Time-of-Flight (ToF) distance 
-sensor from STMicroelectronics. It utilizes an invisible, eye-safe 
-940nm laser to measure absolute distances up to 4 meters, entirely 
-independent of the target's color or reflectivity. 
-It is widely used in robotics, drones, and smart home automation
-
-
-This sensor shares the I2C bus with any other i2c devices, such as
-the apds9930.c
-
-
-
-Supports these commands:
-
-
-
-
-
-
-
-*/
-
-
+ * VL53L1X.c - Time-of-Flight (ToF) Long-Distance Laser Ranging Driver
+ *
+ * Purpose:
+ *   Interfaces with the STMicroelectronics VL53L1X 940nm Time-of-Flight distance sensor
+ *   over the shared I2C bus (address 0x29). Measures distances up to 4 meters independent of
+ *   target color or surface reflectance. Includes a background polling task implementing
+ *   dual-threshold hysteresis ("VL Object Detected", "VL Object Removed") and continuous streaming.
+ *
+ * Supported Commands:
+ *   SetupVL
+ *     Initializes VL53L1X hardware on shared I2C bus and launches background monitoring task.
+ *     Replies "SETUP VL OK" or "SETUP VL FAIL".
+ *
+ *   StreamVL <0|1>
+ *     - 1 to enable, 0 to disable continuous streaming of distance measurements every 100ms.
+ *     Replies "VL STREAM ON" or "VL STREAM OFF".
+ *
+ *   VLUpperThresh <mm>
+ *     - mm: Upper distance threshold in millimeters (default 2000 mm / 2 meters).
+ *     Sets upper bound for hysteresis object detection.
+ *
+ *   VLLowerThresh <mm>
+ *     - mm: Lower distance threshold in millimeters (default 1000 mm / 1 meter).
+ *     Sets lower bound for hysteresis object detection.
+ */
 
 #include <stdio.h>
 #include <string.h>

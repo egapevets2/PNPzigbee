@@ -1,9 +1,54 @@
-// File: Stepper.c
+/*
+ * Stepper.c - 4-Wire Bipolar Stepper Motor Driver Subsystem
+ *
+ * Purpose:
+ *   Drives 4-wire bipolar stepper motors (A+, A-, B+, B- coils) using ESP32-C6 LEDC PWM channels
+ *   allocated through ledc_manager. Supports full-step (4-step) and half-step (8-step) sequences,
+ *   programmable step timing (msPerStep), active duty cycle current limiting (StepPWMduty),
+ *   holding current (HoldPWM), and trapezoidal acceleration/deceleration step ramping.
+ *
+ * Supported Commands:
+ *   SetupStepper
+ *     Allocates LEDC timer and 4 PWM channels for coils and launches stepper background task.
+ *     Replies "SETUP STEPPER OK".
+ *
+ *   Step <steps>
+ *     - steps: Relative step count (positive = forward, negative = reverse).
+ *     Commands stepper movement with acceleration and deceleration profiling.
+ *
+ *   msPerStep <ms>
+ *     - ms: Target step period in milliseconds.
+ *
+ *   StepPWMduty <percent>
+ *     - percent: Active coil PWM duty cycle percentage (0..100, default 25).
+ *
+ *   StepPWMfreq <freq>
+ *     - freq: PWM switching frequency in Hz (default 25000).
+ *
+ *   HoldPWM <percent>
+ *     - percent: Stationary holding duty cycle percentage (0..100, default 0).
+ *
+ *   Accel <steps>
+ *     - steps: Number of acceleration ramp steps from 200ms down to target msPerStep.
+ *
+ *   Decel <steps>
+ *     - steps: Number of deceleration ramp steps up to 200ms.
+ *
+ *   FullStep
+ *     Configures 4-step sequence mode.
+ *
+ *   HalfStep
+ *     Configures 8-step half-step sequence mode.
+ *
+ *   ApGPIO <pin> / AnGPIO <pin> / BpGPIO <pin> / BnGPIO <pin>
+ *     - pin: GPIO pin number for coil A+, A-, B+, or B-.
+ */
 
 #include "Stepper.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/ledc.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include <stdlib.h>
 #include <string.h>
@@ -12,20 +57,20 @@
 
 static const char *TAG = "STEPPER";
 
-static int ap_pin = 18;
-static int an_pin = 17;
-static int bp_pin = 16;
-static int bn_pin = 15;
+static int ap_pin = 1;
+static int an_pin = 21;
+static int bp_pin = 2;
+static int bn_pin = 0;
 
 // Speeds and Ramping
-static int target_ms_per_step = 70;
+static int target_ms_per_step = 20;
 static int max_ms_per_step = 200; // Starting/Ending speed for ramping
 static int accel_steps = 0;
 static int decel_steps = 0;
 
 // Power
-static int pwm_freq = 345;
-static int pwm_duty_percent = 67; 
+static int pwm_freq = 25000;
+static int pwm_duty_percent = 25; 
 static int hold_pwm_percent = 0; 
 
 // State
@@ -42,46 +87,26 @@ static ledc_channel_t bp_channel_num;
 static ledc_channel_t bn_channel_num;
 static bool stepper_active = false;
 
-// --- Step Sequences (Scaled 0-255 for PWM duty calculations) ---
+// --- Step Sequences (1 = coil active at StepPWMduty, 0 = off) ---
 
 // Full Step
 static const uint8_t full_step_seq[4][4] = {
-    {255, 0, 255, 0},
-    {0, 255, 255, 0},
-    {0, 255, 0, 255},
-    {255, 0, 0, 255}
+    {1, 0, 1, 0},
+    {0, 1, 1, 0},
+    {0, 1, 0, 1},
+    {1, 0, 0, 1}
 };
 
 // Half Step
 static const uint8_t half_step_seq[8][4] = {
-    {255, 0, 255, 0},
-    {255, 0, 0,   0},
-    {255, 0, 0, 255},
-    {0,   0, 0, 255},
-    {0, 255, 0, 255},
-    {0, 255, 0,   0},
-    {0, 255, 255, 0},
-    {0,   0, 255, 0}
-};
-
-// 16-Microstep (Sine/Cosine approximation mapped to 0-255)
-static const uint8_t micro_step_seq[16][4] = {
-    {255, 0,   255, 0},
-    {236, 0,   255, 0},
-    {180, 0,   255, 0},
-    {98,  0,   255, 0},
-    {0,   0,   255, 0},
-    {0,   98,  255, 0},
-    {0,   180, 255, 0},
-    {0,   236, 255, 0},
-    {0,   255, 255, 0},
-    {0,   255, 236, 0},
-    {0,   255, 180, 0},
-    {0,   255, 98,  0},
-    {0,   255, 0,   0},
-    {0,   255, 0,   98},
-    {0,   255, 0,   180},
-    {0,   255, 0,   236}
+    {1, 0, 1, 0},
+    {0, 0, 1, 0},
+    {0, 1, 1, 0},
+    {0, 1, 0, 0},
+    {0, 1, 0, 1},
+    {0, 0, 0, 1},
+    {1, 0, 0, 1},
+    {1, 0, 0, 0}
 };
 
 static const uint8_t (*current_sequence)[4] = full_step_seq;
@@ -106,11 +131,10 @@ static void apply_step(int step_idx, int duty_percent) {
 
     uint32_t max_duty = (duty_percent * 255) / 100; 
 
-    // Scale the sequence's fractional value by the requested power level
-    uint32_t d0 = (max_duty * current_sequence[step_idx][0]) / 255;
-    uint32_t d1 = (max_duty * current_sequence[step_idx][1]) / 255;
-    uint32_t d2 = (max_duty * current_sequence[step_idx][2]) / 255;
-    uint32_t d3 = (max_duty * current_sequence[step_idx][3]) / 255;
+    uint32_t d0 = current_sequence[step_idx][0] ? max_duty : 0;
+    uint32_t d1 = current_sequence[step_idx][1] ? max_duty : 0;
+    uint32_t d2 = current_sequence[step_idx][2] ? max_duty : 0;
+    uint32_t d3 = current_sequence[step_idx][3] ? max_duty : 0;
 
     ledc_set_duty(LEDC_LOW_SPEED_MODE, ap_channel_num, d0);
     ledc_set_duty(LEDC_LOW_SPEED_MODE, an_channel_num, d1);
@@ -176,8 +200,36 @@ static void stepper_task(void *arg) {
     }
 }
 
+static int bound_pins[4] = {-1, -1, -1, -1};
+
+static void rebind_all_stepper_channels(void) {
+    for (int i = 0; i < 4; i++) {
+        if (bound_pins[i] >= 0) {
+            gpio_reset_pin(bound_pins[i]);
+        }
+    }
+    if (ap_pin >= 0) gpio_reset_pin(ap_pin);
+    if (an_pin >= 0) gpio_reset_pin(an_pin);
+    if (bp_pin >= 0) gpio_reset_pin(bp_pin);
+    if (bn_pin >= 0) gpio_reset_pin(bn_pin);
+
+    configure_ledc_channel(ap_pin, ap_channel_num);
+    configure_ledc_channel(an_pin, an_channel_num);
+    configure_ledc_channel(bp_pin, bp_channel_num);
+    configure_ledc_channel(bn_pin, bn_channel_num);
+
+    bound_pins[0] = ap_pin;
+    bound_pins[1] = an_pin;
+    bound_pins[2] = bp_pin;
+    bound_pins[3] = bn_pin;
+}
+
 void Stepper_Init(void) {
-    if (stepper_active) return;
+    if (stepper_active) {
+        rebind_all_stepper_channels();
+        ESP_LOGI(TAG, "Stepper re-bound pins: Ap=%d, An=%d, Bp=%d, Bn=%d", ap_pin, an_pin, bp_pin, bn_pin);
+        return;
+    }
 
     if (!ledc_manager_alloc_timer(pwm_freq, &stepper_timer_num)) {
         ESP_LOGE(TAG, "Stepper Init Failed: No free timers");
@@ -203,19 +255,17 @@ void Stepper_Init(void) {
     };
     ledc_timer_config(&ledc_timer);
 
-    configure_ledc_channel(ap_pin, ap_channel_num);
-    configure_ledc_channel(an_pin, an_channel_num);
-    configure_ledc_channel(bp_pin, bp_channel_num);
-    configure_ledc_channel(bn_pin, bn_channel_num);
+    rebind_all_stepper_channels();
 
     xTaskCreate(stepper_task, "stepper_task", 2048, NULL, 5, NULL);
-    ESP_LOGI(TAG, "Stepper Init. Freq: %dHz, Duty: %d%%", pwm_freq, pwm_duty_percent);
+    ESP_LOGI(TAG, "Stepper Init. Pins: Ap=%d, An=%d, Bp=%d, Bn=%d | Freq: %dHz, Duty: %d%%",
+             ap_pin, an_pin, bp_pin, bn_pin, pwm_freq, pwm_duty_percent);
 }
 
-void Stepper_SetApGPIO(int pin) { ap_pin = pin; if (stepper_active) configure_ledc_channel(ap_pin, ap_channel_num); }
-void Stepper_SetAnGPIO(int pin) { an_pin = pin; if (stepper_active) configure_ledc_channel(an_pin, an_channel_num); }
-void Stepper_SetBpGPIO(int pin) { bp_pin = pin; if (stepper_active) configure_ledc_channel(bp_pin, bp_channel_num); }
-void Stepper_SetBnGPIO(int pin) { bn_pin = pin; if (stepper_active) configure_ledc_channel(bn_pin, bn_channel_num); }
+void Stepper_SetApGPIO(int pin) { ap_pin = pin; if (stepper_active) rebind_all_stepper_channels(); }
+void Stepper_SetAnGPIO(int pin) { an_pin = pin; if (stepper_active) rebind_all_stepper_channels(); }
+void Stepper_SetBpGPIO(int pin) { bp_pin = pin; if (stepper_active) rebind_all_stepper_channels(); }
+void Stepper_SetBnGPIO(int pin) { bn_pin = pin; if (stepper_active) rebind_all_stepper_channels(); }
 
 void Stepper_SetMsPerStep(int ms) { target_ms_per_step = ms > 0 ? ms : 1; }
 void Stepper_Step(int steps) { target_steps += steps; }
@@ -237,80 +287,105 @@ void Stepper_SetHoldPWM(int duty_percent) {
 void Stepper_SetAccel(int steps) { accel_steps = steps >= 0 ? steps : 0; }
 void Stepper_SetDecel(int steps) { decel_steps = steps >= 0 ? steps : 0; }
 
-void Stepper_SetModeFullStep(void)  { current_sequence = full_step_seq;  sequence_length = 4;  }
-void Stepper_SetModeHalfStep(void)  { current_sequence = half_step_seq;  sequence_length = 8;  }
-void Stepper_SetModeMicroStep(void) { current_sequence = micro_step_seq; sequence_length = 16; }
+void Stepper_SetModeFullStep(void)  { current_step_index = 0; current_sequence = full_step_seq;  sequence_length = 4;  }
+void Stepper_SetModeHalfStep(void)  { current_step_index = 0; current_sequence = half_step_seq;  sequence_length = 8;  }
+
+static void sanitize_stepper_cmd(const char *src, char *dst, size_t max_len, int *has_eq_val, int16_t *eq_val)
+{
+    if (has_eq_val) *has_eq_val = 0;
+    size_t i = 0;
+    while (src[i] != '\0' && src[i] != '=' && i < max_len - 1) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+    if (src[i] == '=' && has_eq_val && eq_val) {
+        *has_eq_val = 1;
+        *eq_val = (int16_t)atoi(&src[i + 1]);
+    }
+}
 
 // --- Command Routing ---
 bool stepper_is_cmd(const char *cmd) {
     if (!cmd) return false;
-    return (strcmp(cmd, "StepPWMduty") == 0 || strcmp(cmd, "HoldPWM") == 0 || 
-            strcmp(cmd, "Accel") == 0 || strcmp(cmd, "Decel") == 0 || 
-            strcmp(cmd, "FullStep") == 0 || strcmp(cmd, "HalfStep") == 0 || 
-            strcmp(cmd, "MicroStep") == 0 || 
+    char name[32];
+    sanitize_stepper_cmd(cmd, name, sizeof(name), NULL, NULL);
+    return (strcmp(name, "StepPWMduty") == 0 || strcmp(name, "StepPWMfreq") == 0 ||
+            strcmp(name, "HoldPWM") == 0 || 
+            strcmp(name, "Accel") == 0 || strcmp(name, "Decel") == 0 || 
+            strcmp(name, "FullStep") == 0 || strcmp(name, "HalfStep") == 0 || 
             // --- newly restored commands ---
-            strcmp(cmd, "Step") == 0 || strcmp(cmd, "msPerStep") == 0 ||
-            strcmp(cmd, "ApGPIO") == 0 || strcmp(cmd, "AnGPIO") == 0 ||
-            strcmp(cmd, "BpGPIO") == 0 || strcmp(cmd, "BnGPIO") == 0 ||
-            strcmp(cmd, "SetupStepper") == 0);
+            strcmp(name, "Step") == 0 || strcmp(name, "msPerStep") == 0 ||
+            strcmp(name, "ApGPIO") == 0 || strcmp(name, "AnGPIO") == 0 ||
+            strcmp(name, "BpGPIO") == 0 || strcmp(name, "BnGPIO") == 0 ||
+            strcmp(name, "SetupStepper") == 0);
 }
 
 bool stepper_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool text_message) {
-    if (strcmp(cmd, "StepPWMduty") == 0) {
+    if (!cmd) return false;
+    char name[32];
+    int has_eq_val = 0;
+    int16_t eq_val = 0;
+    sanitize_stepper_cmd(cmd, name, sizeof(name), &has_eq_val, &eq_val);
+    if (has_eq_val) {
+        value = eq_val;
+    }
+
+    if (strcmp(name, "StepPWMduty") == 0) {
         Stepper_SetPWMDuty(value);
         if (!text_message) mesh_zigbee_send_text("GOT STEPPWMDUTY OK");
         return true;
-    } else if (strcmp(cmd, "HoldPWM") == 0) {
+    } else if (strcmp(name, "StepPWMfreq") == 0) {
+        Stepper_SetPWMFreq((uint16_t)value);
+        if (!text_message) mesh_zigbee_send_text("GOT STEPPWMFREQ OK");
+        return true;
+    } else if (strcmp(name, "HoldPWM") == 0) {
         Stepper_SetHoldPWM(value);
         if (!text_message) mesh_zigbee_send_text("GOT HOLDPWM OK");
         return true;
-    } else if (strcmp(cmd, "Accel") == 0) {
+    } else if (strcmp(name, "Accel") == 0) {
         Stepper_SetAccel(value);
         if (!text_message) mesh_zigbee_send_text("GOT ACCEL OK");
         return true;
-    } else if (strcmp(cmd, "Decel") == 0) {
+    } else if (strcmp(name, "Decel") == 0) {
         Stepper_SetDecel(value);
         if (!text_message) mesh_zigbee_send_text("GOT DECEL OK");
         return true;
-    } else if (strcmp(cmd, "FullStep") == 0) {
+    } else if (strcmp(name, "FullStep") == 0) {
         Stepper_SetModeFullStep();
         if (!text_message) mesh_zigbee_send_text("GOT FULLSTEP OK");
         return true;
-    } else if (strcmp(cmd, "HalfStep") == 0) {
+    } else if (strcmp(name, "HalfStep") == 0) {
         Stepper_SetModeHalfStep();
         if (!text_message) mesh_zigbee_send_text("GOT HALFSTEP OK");
         return true;
-    } else if (strcmp(cmd, "MicroStep") == 0) {
-        Stepper_SetModeMicroStep();
-        if (!text_message) mesh_zigbee_send_text("GOT MICROSTEP OK");
-        return true;
     } 
     // --- newly restored execution blocks ---
-    else if (strcmp(cmd, "Step") == 0) {
+    else if (strcmp(name, "Step") == 0) {
         Stepper_Step(value);
         if (!text_message) mesh_zigbee_send_text("GOT STEP OK");
         return true;
-    } else if (strcmp(cmd, "msPerStep") == 0) {
+    } else if (strcmp(name, "msPerStep") == 0) {
         Stepper_SetMsPerStep(value);
         if (!text_message) mesh_zigbee_send_text("GOT MSPERSTEP OK");
         return true;
-    } else if (strcmp(cmd, "ApGPIO") == 0) {
+    } else if (strcmp(name, "ApGPIO") == 0) {
         Stepper_SetApGPIO(value);
         if (!text_message) mesh_zigbee_send_text("GOT APGPIO OK");
         return true;
-    } else if (strcmp(cmd, "AnGPIO") == 0) {
+    } else if (strcmp(name, "AnGPIO") == 0) {
         Stepper_SetAnGPIO(value);
         if (!text_message) mesh_zigbee_send_text("GOT ANGPIO OK");
         return true;
-    } else if (strcmp(cmd, "BpGPIO") == 0) {
+    } else if (strcmp(name, "BpGPIO") == 0) {
         Stepper_SetBpGPIO(value);
         if (!text_message) mesh_zigbee_send_text("GOT BPGPIO OK");
         return true;
-    } else if (strcmp(cmd, "BnGPIO") == 0) {
+    } else if (strcmp(name, "BnGPIO") == 0) {
         Stepper_SetBnGPIO(value);
         if (!text_message) mesh_zigbee_send_text("GOT BNGPIO OK");
         return true;
-    } else if (strcmp(cmd, "SetupStepper") == 0) {
+    } else if (strcmp(name, "SetupStepper") == 0) {
         Stepper_Init();
         if (!text_message) mesh_zigbee_send_text("SETUP STEPPER OK");
         return true;

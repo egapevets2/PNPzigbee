@@ -1,3 +1,16 @@
+/*
+ * ledc_manager.c - Centralized LEDC PWM Hardware Resource Manager
+ *
+ * Purpose:
+ *   Coordinates hardware resource allocation for the ESP32-C6 LEDC peripheral (6 channels,
+ *   4 hardware timers in low-speed mode). Dynamically assigns free channels and automatically
+ *   reuses existing timers configured for matching frequencies across motor drivers,
+ *   stepper motor controllers, and general-purpose PWM channels.
+ *
+ * Supported Commands:
+ *   None (Internal Subsystem/Driver)
+ */
+
 #include "ledc_manager.h"
 #include "esp_log.h"
 #include <string.h>

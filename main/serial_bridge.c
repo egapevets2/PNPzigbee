@@ -1,3 +1,18 @@
+/*
+ * serial_bridge.c - Transparent Hardware UART Serial Bridge
+ *
+ * Purpose:
+ *   Implements a dedicated transparent bidirectional serial bridge between external microcontrollers
+ *   or serial devices and the wireless mesh network. Uses ESP32-C6 UART1 (TX=GPIO 17, RX=GPIO 16 @ 115200 baud).
+ *   - Incoming lines received on UART RX are automatically forwarded upstream to the mesh coordinator.
+ *   - Incoming mesh text messages received from the coordinator are automatically printed out to UART TX.
+ *
+ * Supported Commands:
+ *   SetupSerialBridge
+ *     Initializes UART1 hardware, configures baud rate/pins, and starts background RX forwarding task.
+ *     (Dispatched in esp_zb_light.c, replies "SETUP SERIAL OK").
+ */
+
 #include "serial_bridge.h"
 
 #include <string.h>

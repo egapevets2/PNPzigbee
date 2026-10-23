@@ -5,9 +5,11 @@
 #include <stdint.h>
 
 void ADC_Setup(int idx);
+void ADC_SetupPot(int idx);
 int ADC_GetCurrentValue(int idx);
 void ADC_SetUpperThresh(int idx, int val);
 void ADC_SetLowerThresh(int idx, int val);
+void ADC_SetPotDetent(int idx, int pct);
 
 // Command routers
 bool adc_is_cmd(const char *cmd);

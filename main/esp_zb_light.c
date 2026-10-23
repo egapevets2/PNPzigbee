@@ -1,4 +1,39 @@
-// File: esp_zb_light.c
+/*
+ * esp_zb_light.c - Main Application Lifecycle & Mesh Command Dispatcher
+ *
+ * Purpose:
+ *   System entry point (app_main) and runtime orchestrator for both Coordinator and
+ *   End Device nodes.
+ *   - Reads persistent identity and role (ROLE_COORDINATOR, ROLE_END_DEVICE, ROLE_UNPROVISIONED) from NVS.
+ *   - Initializes radio hardware, serial consoles, and peripheral drivers based on role.
+ *   - In End Device mode: runs app_msg_task to receive mesh commands from the coordinator,
+ *     parses incoming text lines, acknowledges valid messages (ACK), handles local core commands,
+ *     and dispatches subsystem commands to appropriate modules.
+ *   - Manages physical user button interrupts and interactive serial console.
+ *
+ * Supported Commands (Directly Handled by Core Dispatcher):
+ *   blink <count> [delay_ms]
+ *     - count: Number of blinks (0..20).
+ *     - delay_ms: Blink half-cycle time in ms (default 200).
+ *     Flashes onboard user LED (GPIO 15) count times.
+ *
+ *   on
+ *     Turns the onboard user LED ON.
+ *
+ *   off
+ *     Turns the onboard user LED OFF.
+ *
+ *   SetupSerialBridge
+ *     Initializes transparent UART bridge (UART1, TX=GPIO17, RX=GPIO16 @ 115200 baud).
+ *     Replies "SETUP SERIAL OK".
+ *
+ *   reboot / restart
+ *     Restarts device after a 150ms delay.
+ *
+ *   (All other commands are dispatched to their respective subsystem modules:
+ *    pwm_driver, motor_driver, gpio_handler, neopixel, adc, stepper, proximity,
+ *    vl53l1x, I2Craw, expand8, ssd1306, compass, unipolarStep).
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,7 +60,6 @@
 #include "adc.h"
 #include "Stepper.h"
 #include "NeoPixel.h"
-#include "BLDC_driver.h"
 #include "ledc_manager.h"
 #include "VL53L1X.h"
 #include "I2Craw.h"
@@ -51,21 +85,34 @@ static void strip_line_endings(char *s)
     }
 }
 
-static bool parse_text_for_local_action(const char *line, char *cmd, size_t cmd_len, int16_t *value1, int16_t *value2, char *str_arg, size_t str_len)
+static bool parse_int_token(const char *tok, int16_t *out)
+{
+    if (!tok || !tok[0] || !out) return false;
+    char *endp = NULL;
+    int base = (strncmp(tok, "0x", 2) == 0 || strncmp(tok, "0X", 2) == 0) ? 16 : 10;
+    long val = strtol(tok, &endp, base);
+    if (endp == tok) return false;
+    *out = (int16_t)val;
+    return true;
+}
+
+static bool parse_text_for_local_action(const char *line, char *cmd, size_t cmd_len, int16_t *value1, int16_t *value2, int16_t *value3, char *str_arg, size_t str_len)
 {
     if (!line || !cmd || cmd_len == 0 || !value1 || !value2) return false;
     if (str_arg && str_len > 0) str_arg[0] = '\0';
 
     char first[MESH_TEXT_LEN] = {0};
     char second[MESH_TEXT_LEN] = {0};
-    int p1 = 0;
-    int p2 = 0;
+    char t1[MESH_TEXT_LEN] = {0};
+    char t2[MESH_TEXT_LEN] = {0};
+    char t3[MESH_TEXT_LEN] = {0};
 
-    int fields = sscanf(line, "%17s %17s %d %d", first, second, &p1, &p2);
+    int fields = sscanf(line, "%17s %17s %17s %17s %17s", first, second, t1, t2, t3);
     if (fields < 1) return false;
 
     *value1 = 0;
     *value2 = -1;
+    if (value3) *value3 = -1;
 
     // NO TARGET: First word is the command
     if (strcmp(first, "blink") == 0 || strcmp(first, "on") == 0 || strcmp(first, "off") == 0 ||
@@ -77,7 +124,6 @@ static bool parse_text_for_local_action(const char *line, char *cmd, size_t cmd_
         gpio_handler_is_cmd(first) ||
         neopixel_is_cmd(first)     ||
         adc_is_cmd(first)          ||
-        BLDC_driver_is_cmd(first)  ||
         stepper_is_cmd(first)      ||
         proximity_is_cmd(first)    ||
         vl53l1x_is_cmd(first)      ||
@@ -88,15 +134,17 @@ static bool parse_text_for_local_action(const char *line, char *cmd, size_t cmd_
         unipolarStep_is_cmd(first))
     {
         strncpy(cmd, first, cmd_len - 1);
-        if (fields >= 2) *value1 = (int16_t)atoi(second);
-        if (fields >= 3) *value2 = (int16_t)p1;
+        if (fields >= 2) parse_int_token(second, value1);
+        if (fields >= 3) parse_int_token(t1, value2);
+        if (fields >= 4 && value3) parse_int_token(t2, value3);
     }
     // HAS TARGET: First word is target, second is command
     else if (fields >= 2)
     {
         strncpy(cmd, second, cmd_len - 1);
-        if (fields >= 3) *value1 = (int16_t)p1;
-        if (fields >= 4) *value2 = (int16_t)p2;
+        if (fields >= 3) parse_int_token(t1, value1);
+        if (fields >= 4) parse_int_token(t2, value2);
+        if (fields >= 5 && value3) parse_int_token(t3, value3);
     }
     else
     {
@@ -113,7 +161,8 @@ static bool parse_text_for_local_action(const char *line, char *cmd, size_t cmd_
             while (*p == ' ') p++;
             // If the next token is numeric, parse it into value1 and advance past it
             char *endp = NULL;
-            long val = strtol(p, &endp, 10);
+            int base = (strncmp(p, "0x", 2) == 0 || strncmp(p, "0X", 2) == 0) ? 16 : 10;
+            long val = strtol(p, &endp, base);
             if (endp != p) {
                 *value1 = (int16_t)val;
                 p = endp;
@@ -291,6 +340,7 @@ static void app_msg_task(void *arg)
         {
             bool text_message = (msg.text[0] != '\0');
             char text_arg[MESH_LINE_LEN] = {0};
+            int16_t text_value3 = -1;
 
             if (text_message)
             {
@@ -308,7 +358,7 @@ static void app_msg_task(void *arg)
                 int16_t text_value1 = 0;
                 int16_t text_value2 = 0;
 
-                if (parse_text_for_local_action(msg.text, text_cmd, sizeof(text_cmd), &text_value1, &text_value2, text_arg, sizeof(text_arg))) {
+                if (parse_text_for_local_action(msg.text, text_cmd, sizeof(text_cmd), &text_value1, &text_value2, &text_value3, text_arg, sizeof(text_arg))) {
                     strncpy(msg.cmd, text_cmd, sizeof(msg.cmd) - 1);
                     msg.value = text_value1;
                     msg.value2 = text_value2;
@@ -317,7 +367,7 @@ static void app_msg_task(void *arg)
                 }
 
                 // If the command is ping, setDAC, setx, clrx, SetupSerialBridge, rdExpand8, rdExpand8byte, SetupExpand8,
-                // ClearDisp, print, SetupDisp, or SetupSSD1306, the dedicated response is sent separately!
+                // ClearDisp, print, SetupDisp, SetupSSD1306, or ReadADC*, the dedicated response is sent separately!
                 // Do NOT send an ACK here so it doesn't conflict or duplicate the reply.
                 if (strcasecmp(msg.cmd, "ping") != 0 && strcasecmp(msg.cmd, "pingx") != 0 &&
                     strcasecmp(msg.cmd, "setDAC") != 0 && strcasecmp(msg.cmd, "SetupSerialBridge") != 0 &&
@@ -328,7 +378,9 @@ static void app_msg_task(void *arg)
                     strcasecmp(msg.cmd, "SetupDisp") != 0 && strcasecmp(msg.cmd, "SetupSSD1306") != 0 &&
                     strcasecmp(msg.cmd, "scanI2C") != 0 && strcasecmp(msg.cmd, "I2Cscan") != 0 &&
                     strcasecmp(msg.cmd, "SetupCompass") != 0 && strcasecmp(msg.cmd, "GetCompass") != 0 &&
-                    strcasecmp(msg.cmd, "ReadCompass") != 0) {
+                    strcasecmp(msg.cmd, "ReadCompass") != 0 &&
+                    strcasecmp(msg.cmd, "GetRFlossThrottle") != 0 &&
+                    strncasecmp(msg.cmd, "ReadADC", 7) != 0) {
                     if (strcmp(msg.text, "ACK") != 0 && msg.source[0] != '\0') {
                         mesh_zigbee_send_text("ACK");
                     }
@@ -371,13 +423,12 @@ static void app_msg_task(void *arg)
             else if (motor_driver_is_cmd(msg.cmd)) motor_driver_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             else if (gpio_handler_is_cmd(msg.cmd)) gpio_handler_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             else if (neopixel_is_cmd(msg.cmd))     neopixel_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
-            else if (BLDC_driver_is_cmd(msg.cmd))  BLDC_driver_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             else if (adc_is_cmd(msg.cmd))          adc_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             else if (stepper_is_cmd(msg.cmd))      stepper_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             else if (proximity_is_cmd(msg.cmd))    proximity_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             else if (vl53l1x_is_cmd(msg.cmd))      vl53l1x_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
             else if (I2Craw_is_cmd(msg.cmd))       I2Craw_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
-            else if (expand8_is_cmd(msg.cmd))      expand8_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
+            else if (expand8_is_cmd(msg.cmd))      expand8_execute_cmd(msg.cmd, msg.value, msg.value2, text_value3, text_message);
             else if (ssd1306_is_cmd(msg.cmd))      ssd1306_execute_cmd(msg.cmd, msg.value, text_arg, text_message);
             else if (compass_is_cmd(msg.cmd))      compass_execute_cmd(msg.cmd, msg.value, text_message);
             else if (unipolarStep_is_cmd(msg.cmd)) unipolarStep_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
@@ -415,6 +466,8 @@ void app_main(void)
         ledc_manager_init();
         light_driver_init(LIGHT_DEFAULT_OFF);
         UpstreamQ_Init();
+        GPIO_Handler_Init();
+        motor_driver_start_task();
         ESP_ERROR_CHECK(mesh_zigbee_init());
 
         xTaskCreate(app_msg_task, "app_msg_task", 3072, NULL, 5, NULL);

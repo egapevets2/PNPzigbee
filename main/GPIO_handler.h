@@ -7,6 +7,7 @@
 void GPIO_Handler_Init(void);
 void GPIO_ModeIn(int gpio_num);
 void GPIO_ModeOut(int gpio_num);
+void GPIO_RFdropBlink(int gpio_num, int enable);
 void GPIO_SetVal(int gpio_num, int val);
 void GPIO_Read(int gpio_num);
 
