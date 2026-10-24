@@ -67,6 +67,7 @@
 #include "ssd1306.h"
 #include "Compass.h"
 #include "unipolarStep.h"
+#include "Rotary.h"
 #include "nvs_config.h"
 #include "serial_gateway.h"
 
@@ -131,7 +132,8 @@ static bool parse_text_for_local_action(const char *line, char *cmd, size_t cmd_
         expand8_is_cmd(first)      ||
         ssd1306_is_cmd(first)      ||
         compass_is_cmd(first)      ||
-        unipolarStep_is_cmd(first))
+        unipolarStep_is_cmd(first) ||
+        rotary_is_cmd(first))
     {
         strncpy(cmd, first, cmd_len - 1);
         if (fields >= 2) parse_int_token(second, value1);
@@ -380,7 +382,10 @@ static void app_msg_task(void *arg)
                     strcasecmp(msg.cmd, "SetupCompass") != 0 && strcasecmp(msg.cmd, "GetCompass") != 0 &&
                     strcasecmp(msg.cmd, "ReadCompass") != 0 &&
                     strcasecmp(msg.cmd, "GetRFlossThrottle") != 0 &&
-                    strncasecmp(msg.cmd, "ReadADC", 7) != 0) {
+                    strncasecmp(msg.cmd, "ReadADC", 7) != 0 &&
+                    strcasecmp(msg.cmd, "SetupRotary") != 0 &&
+                    strcasecmp(msg.cmd, "GetRotary") != 0 &&
+                    strcasecmp(msg.cmd, "ReadRotary") != 0) {
                     if (strcmp(msg.text, "ACK") != 0 && msg.source[0] != '\0') {
                         mesh_zigbee_send_text("ACK");
                     }
@@ -432,6 +437,7 @@ static void app_msg_task(void *arg)
             else if (ssd1306_is_cmd(msg.cmd))      ssd1306_execute_cmd(msg.cmd, msg.value, text_arg, text_message);
             else if (compass_is_cmd(msg.cmd))      compass_execute_cmd(msg.cmd, msg.value, text_message);
             else if (unipolarStep_is_cmd(msg.cmd)) unipolarStep_execute_cmd(msg.cmd, msg.value, msg.value2, text_message);
+            else if (rotary_is_cmd(msg.cmd))       rotary_execute_cmd(msg.cmd, msg.value, msg.value2, text_value3, text_message);
             // ----------------------
             else {
                 if (!text_message) mesh_zigbee_send_text("INVALID");

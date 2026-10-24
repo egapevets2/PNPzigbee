@@ -663,6 +663,29 @@ Supports 5-wire unipolar steppers (e.g. Adafruit 28BYJ-48 small reduction steppe
 | `rawI2Cwr` | `<reg> <val>` | Write 1 byte to register over I2C | `I2C WR OK` / `FAIL` |
 | `rawI2Crd` | `<reg>` | Read 1 byte from register over I2C | `I2Cval <reg> <val>` / `FAIL` |
 
+### 7.9 Keyes KY-040 Rotary Encoder
+The Keyes KY-040 rotary encoder module features 3 signal connections: CLK (Phase A), DT (Phase B), and SW (integrated pushbutton switch).
+- **Quadrature State Machine:** Implements Ben Buxton's 7-state finite state machine algorithm with full-step (at resting 11 detent) and half-step modes. Naturally filters out mechanical switch bounce and EMI glitches.
+- **Debounced Pushbutton:** Hardware-timed falling-edge interrupt with 200ms debounce lockout.
+- **Dynamic Pin Assignment:** Pins CLK, DT, SW are fully configurable via commands from the coordinator (`SetupRotary <clk> <dt> <sw>` or individual `SetRotary*` commands).
+- **Upstream Events:**
+  - `RotaryCW`: Transmitted to the coordinator on every clockwise rotation step.
+  - `RotaryCCW`: Transmitted to the coordinator on every counter-clockwise rotation step.
+  - `RotaryButtonPushed`: Transmitted to the coordinator on every pushbutton press.
+
+| Command | Parameters | Description | Response / Event |
+| :--- | :--- | :--- | :--- |
+| `SetupRotary` | `[clk] [dt] [sw]` | Initialize/reinitialize rotary encoder with specified GPIOs (default: CLK=4, DT=5, SW=6) | `SETUP ROTARY OK` / `FAIL` |
+| `SetRotaryPins` | `<clk> <dt> <sw>` | Explicitly configure all 3 GPIO pins and start encoder | `SET ROTARY PINS OK` / `FAIL` |
+| `SetRotaryCLK` | `<pin>` | Configure encoder CLK pin (Phase A) | `GOT ROTARYCLK OK` / `[ACK]` |
+| `SetRotaryDT` | `<pin>` | Configure encoder DT pin (Phase B) | `GOT ROTARYDT OK` / `[ACK]` |
+| `SetRotarySW` | `<pin>` | Configure encoder SW pushbutton pin | `GOT ROTARYSW OK` / `[ACK]` |
+| `SetRotaryInvert` | `<0\|1>` | Invert rotation direction in software (`1` = swap CW and CCW) | `GOT ROTARYINVERT OK` / `[ACK]` |
+| `SetRotaryHalfStep` | `<0\|1>` | Set step mode: `0` = Full-step (default, 11 detent), `1` = Half-step (00 and 11 detents) | `GOT ROTARYHALFSTEP OK` / `[ACK]` |
+| `GetRotary`, `ReadRotary` | *none* | Read current position count, switch state, and configured pins | `ROTARY CLK=<c> DT=<d> SW=<s> POS=<pos> SW_LVL=<0\|1>` |
+| `ResetRotaryPos` | `[val]` | Reset position counter to `val` (default 0) | `GOT RESETROTARYPOS OK` / `[ACK]` |
+| `StopRotary`, `DeinitRotary` | *none* | Stop encoder monitoring and release GPIO resources | `STOP ROTARY OK` / `[ACK]` |
+
 ---
 
 ## 8. Memory & Partition Layout
@@ -1319,7 +1342,8 @@ The motor fail-safe test ([`run_cytron_rfloss_test()`](file:///c:/Users/egape/Zi
 | **`[J]`** | `--rfdrop` | **RFdropBlink Link-Loss Flasher (`run_rfdrop_blink_test`):** Arms Garage Pin 18, guides Coordinator power disconnect, verifies 4 Hz visual link loss indicator, and confirms automatic cessation upon reconnect. |
 | **`[Y]`** | `--rfloss` | **Cytron Motor RF-Loss Gentle Stop (`run_cytron_rfloss_test`):** Sets motor to 100% power, guides Coordinator power disconnect, verifies smooth 1.0s slew down to 0 power, verifies 1.0s gentle ramp back to 100% on reconnect, and confirms via operator Yes/No prompt. |
 | **`[O]` / `[C]`** | `--oled` / `--cleardisp` | **SSD1306 128x64 OLED (`run_ssd1306_test`):** Initializes `SetupDisp 60`, executes `ClearDisp`, and renders test strings across all 4 Adafruit GFX `FreeMono` font sizes (`9pt`, `12pt`, `18pt`, `24pt`). |
-| **`[K]` / `[Q]`** | `--compass` / `--get-compass` | **QMC5883L 3-Axis Compass (`run_compass_test` / `run_compass_stream`):** Captures baseline magnetic vector $(X_1, Y_1, Z_1)$, prompts user to rotate sensor $>45^\circ$, and verifies angular heading shift ($\ge 15^\circ$) or vector displacement ($\ge 80\text{ LSB}$). Option `[Q]` streams live `x,y,z` at 300 ms intervals until `[ESC]`. |
+| **`[K]`** | `--rotary` | **Keyes KY-040 Rotary Encoder (`run_rotary_encoder_test`):** Configures node `N2` pins (SW=18, DT=20, CLK=19), tracks cumulative count (floor=0, ceiling=8), updates Kitchen OLED line 1 on count changes, and toggles line 2 SW state (`ON`/`OFF`) on button push. |
+| **`[Q]`** | `--get-compass` | **QMC5883L 3-Axis Compass (`run_compass_stream`):** Streams live `x,y,z` at 300 ms intervals until `[ESC]`. |
 | **`[S]`** | `--servo` / `--pwm` | **Hobby Servo PWM Snap vs. Slew (`run_servo_pwm_test`):** Tests `SetupPWM1` on Pin 2 (50 Hz), comparing instant snap (`pwmSlew1 0` between `51` and `102`) against smooth gliding (`pwmSlew1 30`). |
 | **`[M]`** | `--cytron` / `--motor` | **Cytron 10C DC Motor (`run_cytron_motor_test`):** Tests Mode 1 (`SetupMotorDriver 1 5000` on Pin 18 PWM / Pin 20 DIR), 2s ramp to `+1000` (`MotorSlew 500`), 4s reversal ramp to `-1000`, 1s hold, and instant stop (`MotorSlew 0`, `MotorSpeed 0`). |
 | **`[8]` / `[9]`** | `--loopback` / `--schmitt` | **Closed-Loop DAC $\rightarrow$ ADC & Schmitt Trigger Ramp:** Drives analog voltages from `TXRXproto` DAC (`setDAC`) into ESP32-C6 `ADCA1` (GPIO 3) and verifies dynamic hysteresis threshold timing shifts (`ADCupperThreshA1`, `ADCLowerThreshA1`). |
