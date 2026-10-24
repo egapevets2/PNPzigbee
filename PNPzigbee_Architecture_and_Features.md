@@ -1339,6 +1339,7 @@ The motor fail-safe test ([`run_cytron_rfloss_test()`](file:///c:/Users/egape/Zi
 ### 13.7 Additional Automated Subsystem & Resilience Tests
 | Menu Key | CLI Flag | Target Subsystem & Verification Scope |
 | :--- | :--- | :--- |
+| **`[3]`** | `--blink` / `--blinkx` | **Multi-Node LED & Serial Blink (`run_multi_node_blink_test`):** Discovers all mesh endpoints (`GiveNetworkReport`), probes attached serial processors via UART auto-bridge (`ping` $\rightarrow$ `GotPing`), prints discovered topology table, and executes 3 sequential blinks across all endpoint onboard LEDs and attached DotStar RGB LEDs. (Merges previous tests 3 and 4). |
 | **`[J]`** | `--rfdrop` | **RFdropBlink Link-Loss Flasher (`run_rfdrop_blink_test`):** Arms Garage Pin 18, guides Coordinator power disconnect, verifies 4 Hz visual link loss indicator, and confirms automatic cessation upon reconnect. |
 | **`[Y]`** | `--rfloss` | **Cytron Motor RF-Loss Gentle Stop (`run_cytron_rfloss_test`):** Sets motor to 100% power, guides Coordinator power disconnect, verifies smooth 1.0s slew down to 0 power, verifies 1.0s gentle ramp back to 100% on reconnect, and confirms via operator Yes/No prompt. |
 | **`[O]` / `[C]`** | `--oled` / `--cleardisp` | **SSD1306 128x64 OLED (`run_ssd1306_test`):** Initializes `SetupDisp 60`, executes `ClearDisp`, and renders test strings across all 4 Adafruit GFX `FreeMono` font sizes (`9pt`, `12pt`, `18pt`, `24pt`). |
