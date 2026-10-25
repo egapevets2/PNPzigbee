@@ -50,6 +50,14 @@ esp_err_t ssd1306_print_line(int size_pt, const char *text);
 esp_err_t ssd1306_print_2lines(int size_pt, const char *line1, const char *line2);
 
 /**
+ * @brief Renders up to 4 lines simultaneously (separated by line index) and flushes to display in a single I2C operation.
+ * @param size_pt Point size (default 9 or 12).
+ * @param num_lines Number of lines to render (1 to 4).
+ * @param lines Array of strings for each line.
+ */
+esp_err_t ssd1306_print_multilines(int size_pt, int num_lines, const char *lines[]);
+
+/**
  * @brief Renders text at a specific vertical line index without disturbing other lines.
  * @param line_idx 0-based line index (0, 1, 2, ...).
  * @param size_pt Point size (default 12).

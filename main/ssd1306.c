@@ -309,7 +309,7 @@ esp_err_t ssd1306_print_line(int size_pt, const char *text)
     return ssd1306_update();
 }
 
-esp_err_t ssd1306_print_2lines(int size_pt, const char *line1, const char *line2)
+esp_err_t ssd1306_print_multilines(int size_pt, int num_lines, const char *lines[])
 {
     if (s_dev_handle == NULL) {
         esp_err_t err = ssd1306_init(s_current_addr);
@@ -321,44 +321,38 @@ esp_err_t ssd1306_print_2lines(int size_pt, const char *line1, const char *line2
     int yAdvance = font->yAdvance;
     int baseline = fspec->baseline_offset;
 
-    // Render Line 1 at y = 0
-    ssd1306_fill_rect(0, 0, SSD1306_WIDTH, yAdvance, 0);
-    if (line1) {
+    // Clear display buffer for all lines
+    memset(s_buffer, 0, sizeof(s_buffer));
+
+    for (int idx = 0; idx < num_lines; idx++) {
+        int16_t y = idx * yAdvance;
+        if (y + yAdvance > SSD1306_HEIGHT) break;
+        const char *line = lines[idx];
+        if (!line) continue;
+
         int16_t x = 0;
-        size_t len = strlen(line1);
+        size_t len = strlen(line);
         for (size_t i = 0; i < len; i++) {
-            char c = line1[i];
+            char c = line[i];
             if (c < font->first || c > font->last) {
                 if (c == '\r' || c == '\n') break;
                 c = ' ';
             }
             const GFXglyph *glyph = &(font->glyph[c - font->first]);
             if (x + glyph->xOffset + glyph->width > SSD1306_WIDTH && i > 0) break;
-            ssd1306_draw_char(x, 0 + baseline, (unsigned char)c, font);
+            ssd1306_draw_char(x, y + baseline, (unsigned char)c, font);
             x += glyph->xAdvance;
         }
     }
 
-    // Render Line 2 at y = yAdvance
-    ssd1306_fill_rect(0, yAdvance, SSD1306_WIDTH, yAdvance, 0);
-    if (line2) {
-        int16_t x = 0;
-        size_t len = strlen(line2);
-        for (size_t i = 0; i < len; i++) {
-            char c = line2[i];
-            if (c < font->first || c > font->last) {
-                if (c == '\r' || c == '\n') break;
-                c = ' ';
-            }
-            const GFXglyph *glyph = &(font->glyph[c - font->first]);
-            if (x + glyph->xOffset + glyph->width > SSD1306_WIDTH && i > 0) break;
-            ssd1306_draw_char(x, yAdvance + baseline, (unsigned char)c, font);
-            x += glyph->xAdvance;
-        }
-    }
-
-    s_cursor_y = yAdvance * 2;
+    s_cursor_y = num_lines * yAdvance;
     return ssd1306_update();
+}
+
+esp_err_t ssd1306_print_2lines(int size_pt, const char *line1, const char *line2)
+{
+    const char *lines[2] = { line1, line2 };
+    return ssd1306_print_multilines(size_pt, 2, lines);
 }
 
 esp_err_t ssd1306_print_at(int line_idx, int size_pt, const char *text)
@@ -405,6 +399,7 @@ bool ssd1306_is_cmd(const char *cmd)
             strcasecmp(cmd, "print") == 0 ||
             strcasecmp(cmd, "Print2") == 0 ||
             strcasecmp(cmd, "PrintLines") == 0 ||
+            strcasecmp(cmd, "Print3") == 0 ||
             strcasecmp(cmd, "PrintAt") == 0 ||
             strcasecmp(cmd, "SetupDisp") == 0 ||
             strcasecmp(cmd, "SetupSSD1306") == 0);
@@ -420,23 +415,35 @@ bool ssd1306_execute_cmd(const char *cmd, int16_t value, const char *str_arg, bo
         }
         return true;
     }
-    else if (strcasecmp(cmd, "Print2") == 0 || strcasecmp(cmd, "PrintLines") == 0) {
+    else if (strcasecmp(cmd, "Print2") == 0 || strcasecmp(cmd, "PrintLines") == 0 || strcasecmp(cmd, "Print3") == 0) {
         int size_pt = (value > 0) ? (int)value : 12;
         const char *text = (str_arg && str_arg[0] != '\0') ? str_arg : "";
-        char buf1[64] = {0};
-        char buf2[64] = {0};
-        const char *sep = strchr(text, '|');
-        if (!sep) sep = strchr(text, '\n');
-        if (sep) {
-            size_t l1 = sep - text;
-            if (l1 >= sizeof(buf1)) l1 = sizeof(buf1) - 1;
-            strncpy(buf1, text, l1);
-            buf1[l1] = '\0';
-            strncpy(buf2, sep + 1, sizeof(buf2) - 1);
-        } else {
-            strncpy(buf1, text, sizeof(buf1) - 1);
+        char buf[4][64];
+        const char *lines[4] = {0};
+        int count = 0;
+        memset(buf, 0, sizeof(buf));
+
+        const char *p = text;
+        while (p && *p && count < 4) {
+            const char *sep = strchr(p, '|');
+            if (!sep) sep = strchr(p, '\n');
+            if (sep) {
+                size_t l = sep - p;
+                if (l >= sizeof(buf[count])) l = sizeof(buf[count]) - 1;
+                strncpy(buf[count], p, l);
+                buf[count][l] = '\0';
+                lines[count] = buf[count];
+                count++;
+                p = sep + 1;
+            } else {
+                strncpy(buf[count], p, sizeof(buf[count]) - 1);
+                lines[count] = buf[count];
+                count++;
+                break;
+            }
         }
-        if (ssd1306_print_2lines(size_pt, buf1, buf2) == ESP_OK) {
+
+        if (ssd1306_print_multilines(size_pt, count, lines) == ESP_OK) {
             mesh_zigbee_send_text("PRINT OK");
         } else {
             mesh_zigbee_send_text("PRINT FAIL");
