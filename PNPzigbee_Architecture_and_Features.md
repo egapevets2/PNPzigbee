@@ -684,6 +684,7 @@ The Keyes KY-040 rotary encoder module features 3 signal connections: CLK (Phase
 | `SetRotarySW` | `<pin>` | Configure encoder SW pushbutton pin | `GOT ROTARYSW OK` / `[ACK]` |
 | `SetRotaryInvert` | `<0\|1>` | Invert rotation direction in software (`1` = swap CW and CCW) | `GOT ROTARYINVERT OK` / `[ACK]` |
 | `SetRotaryHalfStep` | `<0\|1>` | Set step mode: `0` = Full-step (default, 11 detent), `1` = Half-step (00 and 11 detents) | `GOT ROTARYHALFSTEP OK` / `[ACK]` |
+| `MonitorRotary`, `StreamRotary` | `<0\|1>` | Enable/disable real-time 2-bit (CLK, DT) and SW state change streaming with microsecond timestamps | `MONITOR ROTARY ON` / `OFF` |
 | `GetRotary`, `ReadRotary` | *none* | Read current position count, switch state, and configured pins | `ROTARY CLK=<c> DT=<d> SW=<s> POS=<pos> SW_LVL=<0\|1>` |
 | `ResetRotaryPos` | `[val]` | Reset position counter to `val` (default 0) | `GOT RESETROTARYPOS OK` / `[ACK]` |
 | `StopRotary`, `DeinitRotary` | *none* | Stop encoder monitoring and release GPIO resources | `STOP ROTARY OK` / `[ACK]` |
@@ -1346,6 +1347,7 @@ The motor fail-safe test ([`run_cytron_rfloss_test()`](file:///c:/Users/egape/Zi
 | **`[Y]`** | `--rfloss` | **Cytron Motor RF-Loss Gentle Stop (`run_cytron_rfloss_test`):** Sets motor to 100% power, guides Coordinator power disconnect, verifies smooth 1.0s slew down to 0 power, verifies 1.0s gentle ramp back to 100% on reconnect, and confirms via operator Yes/No prompt. |
 | **`[O]` / `[C]`** | `--oled` / `--cleardisp` | **SSD1306 128x64 OLED (`run_ssd1306_test`):** Initializes `SetupDisp 60`, executes `ClearDisp`, and renders test strings across all 4 Adafruit GFX `FreeMono` font sizes (`9pt`, `12pt`, `18pt`, `24pt`). |
 | **`[K]`** | `--rotary` | **Keyes KY-040 Rotary Encoder (`run_rotary_encoder_test`):** Configures node `N2` pins (SW=19, DT=20, CLK=18), tracks cumulative count (floor=0, ceiling=8), updates Kitchen OLED line 1 on count changes, and toggles line 2 SW state (`ON`/`OFF`) on button push. |
+| **`[Z]`** | `--rotary-raw` | **Rotary 2-Bit Raw Monitor (`run_rotary_raw_monitor_test`):** Live print-on-change streaming of raw quadrature bits `[CLK, DT]` and pushbutton SW state with delta millisecond timestamps to analyze Gray code transitions and detents. |
 | **`[Q]`** | `--get-compass` | **QMC5883L 3-Axis Compass (`run_compass_stream`):** Streams live `x,y,z` at 300 ms intervals until `[ESC]`. |
 | **`[S]`** | `--servo` / `--pwm` | **Hobby Servo PWM Snap vs. Slew (`run_servo_pwm_test`):** Tests `SetupPWM1` on Pin 2 (50 Hz), comparing instant snap (`pwmSlew1 0` between `51` and `102`) against smooth gliding (`pwmSlew1 30`). |
 | **`[M]`** | `--cytron` / `--motor` | **Cytron 10C DC Motor (`run_cytron_motor_test`):** Tests Mode 1 (`SetupMotorDriver 1 5000` on Pin 18 PWM / Pin 20 DIR), 2s ramp to `+1000` (`MotorSlew 500`), 4s reversal ramp to `-1000`, 1s hold, and instant stop (`MotorSlew 0`, `MotorSpeed 0`). |
