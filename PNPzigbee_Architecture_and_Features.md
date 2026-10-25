@@ -450,6 +450,8 @@ Provides 4 independent hardware-timed PWM channels (`PWM1`–`PWM4`, [`pwm_drive
 - **Commands & Telemetry:**
   - `ClearDisp`: Clears the display to black, zeroes the framebuffer, and resets the line cursor to line 0 (top of screen). Returns `CLEARDISP OK` or `CLEARDISP FAIL`.
   - `print <size> <string>`: Prints arbitrary text string (supports spaces) at specified point size (9, 12, 18, 24; defaults to 12) on current line and advances cursor. Returns `PRINT OK` or `PRINT FAIL`.
+  - `PrintLines <size> <line1>|<line2>` / `Print2 <size> <line1>|<line2>`: Renders line 1 at y=0 and line 2 at y=yAdvance in a single atomic transmission, refreshing the OLED screen once. Eliminates screen blanking flicker and reduces OTA round-trip latency by 8x for status screens. Returns `PRINT OK` or `PRINT FAIL`.
+  - `PrintAt <line_idx> [size] <string>`: Renders text at a specific vertical line index (0, 1, 2) without erasing or disturbing other lines on the display. Returns `PRINT OK` or `PRINT FAIL`.
   - `SetupDisp [addr]` / `SetupSSD1306 [addr]`: Explicitly creates the shared I2C bus and initializes the SSD1306 hardware at specified 7-bit address (default: `0x3C` / 60). Returns `SETUP DISP OK` or `SETUP DISP FAIL`.
   - Responses suppress generic `[ACK]` frames to optimize wireless bandwidth.
 
