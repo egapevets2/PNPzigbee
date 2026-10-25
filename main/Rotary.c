@@ -57,7 +57,7 @@ static int s_pin_sw  = ROTARY_DEFAULT_PIN_SW;
 static volatile bool s_rotary_active = false;
 static volatile int32_t s_rotary_position = 0;
 static volatile bool s_invert_dir = false;
-static volatile bool s_half_step = false;
+static volatile bool s_half_step = true;
 static volatile uint8_t s_encoder_state = 0;
 static volatile int64_t s_last_btn_press_time = 0;
 static volatile bool s_rotary_monitor_raw = false;
@@ -314,8 +314,13 @@ esp_err_t rotary_init(int pin_clk, int pin_dt, int pin_sw)
         }
     }
 
-    // Reset initial state
-    s_encoder_state = R_START;
+    // Reset initial state based on resting pin levels
+    uint8_t init_pins = (gpio_get_level((gpio_num_t)s_pin_clk) << 1) | gpio_get_level((gpio_num_t)s_pin_dt);
+    if (s_half_step) {
+        s_encoder_state = (init_pins == 0x03) ? HS_START_M : HS_START;
+    } else {
+        s_encoder_state = R_START;
+    }
     s_last_btn_press_time = 0;
     s_rotary_active = true;
 
