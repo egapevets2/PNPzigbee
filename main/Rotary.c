@@ -60,6 +60,7 @@ static volatile bool s_invert_dir = false;
 static volatile bool s_half_step = true;
 static volatile uint8_t s_encoder_state = 0;
 static volatile int64_t s_last_btn_press_time = 0;
+static volatile bool s_btn_is_pressed = false;
 static volatile bool s_rotary_monitor_raw = false;
 static TaskHandle_t s_rotary_raw_task_handle = NULL;
 
@@ -166,12 +167,13 @@ static void IRAM_ATTR rotary_btn_isr_handler(void *arg)
 {
     if (!s_rotary_active || s_pin_sw < 0) return;
 
-    // Verify low logic level
-    if (gpio_get_level((gpio_num_t)s_pin_sw) == 0) {
+    // Verify low logic level and ensure not already latched as pressed
+    if (!s_btn_is_pressed && gpio_get_level((gpio_num_t)s_pin_sw) == 0) {
         int64_t now = esp_timer_get_time();
-        // 200 ms (200,000 us) debounce lockout
-        if ((now - s_last_btn_press_time) > 200000) {
+        // 100 ms debounce lockout
+        if ((now - s_last_btn_press_time) > 100000) {
             s_last_btn_press_time = now;
+            s_btn_is_pressed = true;
             if (s_rotary_queue != NULL) {
                 rotary_internal_event_t evt = ROTARY_EVT_BUTTON;
                 BaseType_t higher_woken = pdFALSE;
@@ -210,6 +212,13 @@ static void rotary_worker_task(void *arg)
                 case ROTARY_EVT_BUTTON:
                     ESP_LOGI(TAG, "RotaryButtonPushed event");
                     SendTheMessage("RotaryButtonPushed");
+                    // Wait until button is physically released
+                    while (s_rotary_active && s_pin_sw >= 0 && gpio_get_level((gpio_num_t)s_pin_sw) == 0) {
+                        vTaskDelay(pdMS_TO_TICKS(10));
+                    }
+                    // Debounce release settling time
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                    s_btn_is_pressed = false;
                     break;
             }
         }
@@ -322,6 +331,7 @@ esp_err_t rotary_init(int pin_clk, int pin_dt, int pin_sw)
         s_encoder_state = R_START;
     }
     s_last_btn_press_time = 0;
+    s_btn_is_pressed = false;
     s_rotary_active = true;
 
     // Launch background worker task
