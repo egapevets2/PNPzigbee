@@ -12,7 +12,9 @@
  * Upstream Messages Sent to Coordinator:
  *   - "RotaryCW"            : Clockwise rotation step detected
  *   - "RotaryCCW"           : Counter-clockwise rotation step detected
- *   - "RotaryButtonPushed"  : Pushbutton switch pressed (debounced)
+ *   - "RotaryButtonDown"    : Pushbutton switch pressed / held down (momentary ON)
+ *   - "RotaryButtonUp"      : Pushbutton switch released (momentary OFF)
+ *   - "RotaryButtonPushed"  : Legacy alias for button press event
  *
  * Supported Commands from Coordinator / Serial:
  *   - SetupRotary [clk] [dt] [sw]

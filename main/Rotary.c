@@ -72,7 +72,7 @@ static TaskHandle_t s_rotary_task_handle = NULL;
 typedef enum {
     ROTARY_EVT_CW,
     ROTARY_EVT_CCW,
-    ROTARY_EVT_BUTTON
+    ROTARY_EVT_BTN_EDGE
 } rotary_internal_event_t;
 
 /*
@@ -161,27 +161,18 @@ static void IRAM_ATTR rotary_isr_handler(void *arg)
 }
 
 /*
- * Pushbutton Switch ISR (SW line, active LOW)
+ * Pushbutton Switch ISR (SW line, active LOW, triggered on ANYEDGE)
  */
 static void IRAM_ATTR rotary_btn_isr_handler(void *arg)
 {
     if (!s_rotary_active || s_pin_sw < 0) return;
 
-    // Verify low logic level and ensure not already latched as pressed
-    if (!s_btn_is_pressed && gpio_get_level((gpio_num_t)s_pin_sw) == 0) {
-        int64_t now = esp_timer_get_time();
-        // 100 ms debounce lockout
-        if ((now - s_last_btn_press_time) > 100000) {
-            s_last_btn_press_time = now;
-            s_btn_is_pressed = true;
-            if (s_rotary_queue != NULL) {
-                rotary_internal_event_t evt = ROTARY_EVT_BUTTON;
-                BaseType_t higher_woken = pdFALSE;
-                xQueueSendFromISR(s_rotary_queue, &evt, &higher_woken);
-                if (higher_woken == pdTRUE) {
-                    portYIELD_FROM_ISR();
-                }
-            }
+    if (s_rotary_queue != NULL) {
+        rotary_internal_event_t evt = ROTARY_EVT_BTN_EDGE;
+        BaseType_t higher_woken = pdFALSE;
+        xQueueSendFromISR(s_rotary_queue, &evt, &higher_woken);
+        if (higher_woken == pdTRUE) {
+            portYIELD_FROM_ISR();
         }
     }
 }
@@ -209,16 +200,23 @@ static void rotary_worker_task(void *arg)
                     SendTheMessage("RotaryCCW");
                     break;
 
-                case ROTARY_EVT_BUTTON:
-                    ESP_LOGI(TAG, "RotaryButtonPushed event");
-                    SendTheMessage("RotaryButtonPushed");
-                    // Wait until button is physically released
-                    while (s_rotary_active && s_pin_sw >= 0 && gpio_get_level((gpio_num_t)s_pin_sw) == 0) {
-                        vTaskDelay(pdMS_TO_TICKS(10));
+                case ROTARY_EVT_BTN_EDGE:
+                    // Wait 30ms for contact bounce to settle
+                    vTaskDelay(pdMS_TO_TICKS(30));
+                    if (s_pin_sw >= 0) {
+                        int level = gpio_get_level((gpio_num_t)s_pin_sw);
+                        bool pressed = (level == 0);
+                        if (pressed != s_btn_is_pressed) {
+                            s_btn_is_pressed = pressed;
+                            if (pressed) {
+                                ESP_LOGI(TAG, "RotaryButtonDown event (SW pressed / held)");
+                                SendTheMessage("RotaryButtonDown");
+                            } else {
+                                ESP_LOGI(TAG, "RotaryButtonUp event (SW released)");
+                                SendTheMessage("RotaryButtonUp");
+                            }
+                        }
                     }
-                    // Debounce release settling time
-                    vTaskDelay(pdMS_TO_TICKS(50));
-                    s_btn_is_pressed = false;
                     break;
             }
         }
@@ -268,13 +266,13 @@ esp_err_t rotary_init(int pin_clk, int pin_dt, int pin_sw)
         return err;
     }
 
-    // Configure SW as input with internal pull-up and falling-edge interrupt
+    // Configure SW as input with internal pull-up and any-edge interrupt (for momentary press and release)
     gpio_config_t sw_conf = {
         .pin_bit_mask = (1ULL << s_pin_sw),
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_NEGEDGE,
+        .intr_type = GPIO_INTR_ANYEDGE,
     };
     err = gpio_config(&sw_conf);
     if (err != ESP_OK) {
@@ -331,7 +329,7 @@ esp_err_t rotary_init(int pin_clk, int pin_dt, int pin_sw)
         s_encoder_state = R_START;
     }
     s_last_btn_press_time = 0;
-    s_btn_is_pressed = false;
+    s_btn_is_pressed = (s_pin_sw >= 0 && gpio_get_level((gpio_num_t)s_pin_sw) == 0);
     s_rotary_active = true;
 
     // Launch background worker task
