@@ -60,6 +60,8 @@ static volatile bool s_invert_dir = false;
 static volatile bool s_half_step = false;
 static volatile uint8_t s_encoder_state = 0;
 static volatile int64_t s_last_btn_press_time = 0;
+static volatile bool s_rotary_monitor_raw = false;
+static TaskHandle_t s_rotary_raw_task_handle = NULL;
 
 // FreeRTOS queue and worker task
 #define ROTARY_QUEUE_LEN 32
@@ -339,6 +341,11 @@ esp_err_t rotary_deinit(void)
     if (!s_rotary_active) return ESP_OK;
 
     s_rotary_active = false;
+    s_rotary_monitor_raw = false;
+
+    if (s_rotary_raw_task_handle != NULL) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
 
     if (s_pin_clk >= 0) {
         gpio_isr_handler_remove((gpio_num_t)s_pin_clk);
@@ -427,6 +434,50 @@ void rotary_set_half_step(bool half_step)
     s_half_step = half_step;
 }
 
+static void rotary_raw_task(void *arg)
+{
+    int last_bits = -1;
+    int last_sw = -1;
+    int64_t last_time = 0;
+
+    ESP_LOGI(TAG, "Rotary raw bit monitor task started");
+
+    while (s_rotary_monitor_raw && s_rotary_active) {
+        if (s_pin_clk >= 0 && s_pin_dt >= 0) {
+            int clk = gpio_get_level((gpio_num_t)s_pin_clk);
+            int dt  = gpio_get_level((gpio_num_t)s_pin_dt);
+            int sw  = (s_pin_sw >= 0) ? gpio_get_level((gpio_num_t)s_pin_sw) : -1;
+            int bits = (clk << 1) | dt;
+
+            if (bits != last_bits || sw != last_sw) {
+                int64_t now = esp_timer_get_time();
+                int64_t delta_ms = (last_time == 0) ? 0 : (now - last_time) / 1000;
+                last_time = now;
+                last_bits = bits;
+                last_sw = sw;
+
+                char msg[64];
+                snprintf(msg, sizeof(msg), "RotaryBits %d%d clk=%d dt=%d sw=%d +%lldms",
+                         clk, dt, clk, dt, sw, (long long)delta_ms);
+                SendTheMessage(msg);
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+
+    ESP_LOGI(TAG, "Rotary raw bit monitor task stopped");
+    s_rotary_raw_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+void rotary_set_monitor_raw(bool enable)
+{
+    s_rotary_monitor_raw = enable;
+    if (enable && s_rotary_active && s_rotary_raw_task_handle == NULL) {
+        xTaskCreate(rotary_raw_task, "rot_raw_task", 3072, NULL, 5, &s_rotary_raw_task_handle);
+    }
+}
+
 bool rotary_is_cmd(const char *cmd)
 {
     if (!cmd) return false;
@@ -437,6 +488,8 @@ bool rotary_is_cmd(const char *cmd)
             strcasecmp(cmd, "SetRotarySW") == 0 ||
             strcasecmp(cmd, "SetRotaryInvert") == 0 ||
             strcasecmp(cmd, "SetRotaryHalfStep") == 0 ||
+            strcasecmp(cmd, "MonitorRotary") == 0 ||
+            strcasecmp(cmd, "StreamRotary") == 0 ||
             strcasecmp(cmd, "GetRotary") == 0 ||
             strcasecmp(cmd, "ReadRotary") == 0 ||
             strcasecmp(cmd, "ResetRotaryPos") == 0 ||
@@ -484,6 +537,16 @@ bool rotary_execute_cmd(const char *cmd, int16_t value, int16_t value2, int16_t 
     else if (strcasecmp(cmd, "SetRotaryHalfStep") == 0) {
         rotary_set_half_step(value != 0);
         if (!text_message) mesh_zigbee_send_text("GOT ROTARYHALFSTEP OK");
+        return true;
+    }
+    else if (strcasecmp(cmd, "MonitorRotary") == 0 || strcasecmp(cmd, "StreamRotary") == 0) {
+        bool enable = (value > 0);
+        rotary_set_monitor_raw(enable);
+        if (enable) {
+            mesh_zigbee_send_text("MONITOR ROTARY ON");
+        } else {
+            mesh_zigbee_send_text("MONITOR ROTARY OFF");
+        }
         return true;
     }
     else if (strcasecmp(cmd, "GetRotary") == 0 || strcasecmp(cmd, "ReadRotary") == 0) {

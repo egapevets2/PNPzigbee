@@ -108,6 +108,12 @@ void rotary_set_invert(bool invert);
 void rotary_set_half_step(bool half_step);
 
 /**
+ * @brief Enable or disable real-time raw 2-bit (CLK, DT) and SW state change streaming.
+ *        Emits "RotaryBits <bits> clk=<c> dt=<d> sw=<s> +<delta>ms" on every pin level change.
+ */
+void rotary_set_monitor_raw(bool enable);
+
+/**
  * @brief Check if the command name belongs to the Rotary subsystem.
  */
 bool rotary_is_cmd(const char *cmd);
