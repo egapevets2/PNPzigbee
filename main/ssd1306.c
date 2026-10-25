@@ -309,11 +309,103 @@ esp_err_t ssd1306_print_line(int size_pt, const char *text)
     return ssd1306_update();
 }
 
+esp_err_t ssd1306_print_2lines(int size_pt, const char *line1, const char *line2)
+{
+    if (s_dev_handle == NULL) {
+        esp_err_t err = ssd1306_init(s_current_addr);
+        if (err != ESP_OK) return err;
+    }
+
+    const font_spec_t *fspec = get_font_spec(size_pt);
+    const GFXfont *font = fspec->font;
+    int yAdvance = font->yAdvance;
+    int baseline = fspec->baseline_offset;
+
+    // Render Line 1 at y = 0
+    ssd1306_fill_rect(0, 0, SSD1306_WIDTH, yAdvance, 0);
+    if (line1) {
+        int16_t x = 0;
+        size_t len = strlen(line1);
+        for (size_t i = 0; i < len; i++) {
+            char c = line1[i];
+            if (c < font->first || c > font->last) {
+                if (c == '\r' || c == '\n') break;
+                c = ' ';
+            }
+            const GFXglyph *glyph = &(font->glyph[c - font->first]);
+            if (x + glyph->xOffset + glyph->width > SSD1306_WIDTH && i > 0) break;
+            ssd1306_draw_char(x, 0 + baseline, (unsigned char)c, font);
+            x += glyph->xAdvance;
+        }
+    }
+
+    // Render Line 2 at y = yAdvance
+    ssd1306_fill_rect(0, yAdvance, SSD1306_WIDTH, yAdvance, 0);
+    if (line2) {
+        int16_t x = 0;
+        size_t len = strlen(line2);
+        for (size_t i = 0; i < len; i++) {
+            char c = line2[i];
+            if (c < font->first || c > font->last) {
+                if (c == '\r' || c == '\n') break;
+                c = ' ';
+            }
+            const GFXglyph *glyph = &(font->glyph[c - font->first]);
+            if (x + glyph->xOffset + glyph->width > SSD1306_WIDTH && i > 0) break;
+            ssd1306_draw_char(x, yAdvance + baseline, (unsigned char)c, font);
+            x += glyph->xAdvance;
+        }
+    }
+
+    s_cursor_y = yAdvance * 2;
+    return ssd1306_update();
+}
+
+esp_err_t ssd1306_print_at(int line_idx, int size_pt, const char *text)
+{
+    if (s_dev_handle == NULL) {
+        esp_err_t err = ssd1306_init(s_current_addr);
+        if (err != ESP_OK) return err;
+    }
+    if (!text) return ESP_ERR_INVALID_ARG;
+
+    const font_spec_t *fspec = get_font_spec(size_pt);
+    const GFXfont *font = fspec->font;
+    int yAdvance = font->yAdvance;
+    int baseline = fspec->baseline_offset;
+
+    int16_t y = line_idx * yAdvance;
+    if (y + yAdvance > SSD1306_HEIGHT) {
+        y = 0;
+    }
+
+    ssd1306_fill_rect(0, y, SSD1306_WIDTH, yAdvance, 0);
+
+    int16_t x = 0;
+    size_t len = strlen(text);
+    for (size_t i = 0; i < len; i++) {
+        char c = text[i];
+        if (c < font->first || c > font->last) {
+            if (c == '\r' || c == '\n') break;
+            c = ' ';
+        }
+        const GFXglyph *glyph = &(font->glyph[c - font->first]);
+        if (x + glyph->xOffset + glyph->width > SSD1306_WIDTH && i > 0) break;
+        ssd1306_draw_char(x, y + baseline, (unsigned char)c, font);
+        x += glyph->xAdvance;
+    }
+
+    return ssd1306_update();
+}
+
 bool ssd1306_is_cmd(const char *cmd)
 {
     if (!cmd) return false;
     return (strcasecmp(cmd, "ClearDisp") == 0 ||
             strcasecmp(cmd, "print") == 0 ||
+            strcasecmp(cmd, "Print2") == 0 ||
+            strcasecmp(cmd, "PrintLines") == 0 ||
+            strcasecmp(cmd, "PrintAt") == 0 ||
             strcasecmp(cmd, "SetupDisp") == 0 ||
             strcasecmp(cmd, "SetupSSD1306") == 0);
 }
@@ -325,6 +417,48 @@ bool ssd1306_execute_cmd(const char *cmd, int16_t value, const char *str_arg, bo
             mesh_zigbee_send_text("CLEARDISP OK");
         } else {
             mesh_zigbee_send_text("CLEARDISP FAIL");
+        }
+        return true;
+    }
+    else if (strcasecmp(cmd, "Print2") == 0 || strcasecmp(cmd, "PrintLines") == 0) {
+        int size_pt = (value > 0) ? (int)value : 12;
+        const char *text = (str_arg && str_arg[0] != '\0') ? str_arg : "";
+        char buf1[64] = {0};
+        char buf2[64] = {0};
+        const char *sep = strchr(text, '|');
+        if (!sep) sep = strchr(text, '\n');
+        if (sep) {
+            size_t l1 = sep - text;
+            if (l1 >= sizeof(buf1)) l1 = sizeof(buf1) - 1;
+            strncpy(buf1, text, l1);
+            buf1[l1] = '\0';
+            strncpy(buf2, sep + 1, sizeof(buf2) - 1);
+        } else {
+            strncpy(buf1, text, sizeof(buf1) - 1);
+        }
+        if (ssd1306_print_2lines(size_pt, buf1, buf2) == ESP_OK) {
+            mesh_zigbee_send_text("PRINT OK");
+        } else {
+            mesh_zigbee_send_text("PRINT FAIL");
+        }
+        return true;
+    }
+    else if (strcasecmp(cmd, "PrintAt") == 0) {
+        int line_idx = (value >= 0) ? (int)value : 0;
+        int size_pt = 12;
+        const char *text = (str_arg && str_arg[0] != '\0') ? str_arg : "";
+        // Optional second number in str_arg: "12 <text>"
+        char *endp = NULL;
+        long parsed_sz = strtol(text, &endp, 10);
+        if (endp && endp != text && (*endp == ' ' || *endp == '\t')) {
+            size_pt = (int)parsed_sz;
+            text = endp;
+            while (*text == ' ' || *text == '\t') text++;
+        }
+        if (ssd1306_print_at(line_idx, size_pt, text) == ESP_OK) {
+            mesh_zigbee_send_text("PRINT OK");
+        } else {
+            mesh_zigbee_send_text("PRINT FAIL");
         }
         return true;
     }

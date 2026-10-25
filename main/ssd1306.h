@@ -41,6 +41,23 @@ esp_err_t ssd1306_clear_display(void);
 esp_err_t ssd1306_print_line(int size_pt, const char *text);
 
 /**
+ * @brief Renders two lines simultaneously and flushes to display in a single I2C operation.
+ * Eliminates screen blanking and multi-packet latency for multi-line status screens.
+ * @param size_pt Point size (default 12).
+ * @param line1 Text for line 1 (y = 0).
+ * @param line2 Text for line 2 (y = yAdvance).
+ */
+esp_err_t ssd1306_print_2lines(int size_pt, const char *line1, const char *line2);
+
+/**
+ * @brief Renders text at a specific vertical line index without disturbing other lines.
+ * @param line_idx 0-based line index (0, 1, 2, ...).
+ * @param size_pt Point size (default 12).
+ * @param text ASCII text string to render.
+ */
+esp_err_t ssd1306_print_at(int line_idx, int size_pt, const char *text);
+
+/**
  * @brief Flushes the internal 1024-byte framebuffer to the physical SSD1306.
  */
 esp_err_t ssd1306_update(void);

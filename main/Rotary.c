@@ -105,18 +105,21 @@ static const uint8_t s_ttable_full[7][4] = {
  * Half-step state table:
  * Emits events at both detent positions (00 and 11) for encoders with detents every half-cycle.
  */
-#define R_START_M     0x3
-#define R_CW_BEGIN_M  0x4
-#define R_CCW_BEGIN_M 0x5
+#define HS_START        0x0
+#define HS_CCW_BEGIN    0x1
+#define HS_CW_BEGIN     0x2
+#define HS_START_M      0x3
+#define HS_CW_BEGIN_M   0x4
+#define HS_CCW_BEGIN_M  0x5
 
 static const uint8_t s_ttable_half[6][4] = {
-    // 00                  01             10             11
-    {R_START_M,           R_CW_BEGIN,    R_CCW_BEGIN,   R_START},
-    {R_START_M | DIR_CCW, R_START,       R_CCW_BEGIN,   R_START},
-    {R_START_M | DIR_CW,  R_CW_BEGIN,    R_START,       R_START},
-    {R_START_M,           R_CCW_BEGIN_M, R_CW_BEGIN_M,  R_START_M},
-    {R_START_M | DIR_CW,  R_START_M,     R_CW_BEGIN_M,  R_START_M},
-    {R_START_M | DIR_CCW, R_CCW_BEGIN_M, R_START_M,     R_START_M}
+    // 00                   01              10              11
+    {HS_START_M,            HS_CW_BEGIN,    HS_CCW_BEGIN,   HS_START},
+    {HS_START_M | DIR_CCW,  HS_START,       HS_CCW_BEGIN,   HS_START},
+    {HS_START_M | DIR_CW,   HS_CW_BEGIN,    HS_START,       HS_START},
+    {HS_START_M,            HS_CCW_BEGIN_M, HS_CW_BEGIN_M,  HS_START},
+    {HS_START_M,            HS_START_M,     HS_CW_BEGIN_M,  HS_START | DIR_CW},
+    {HS_START_M,            HS_CCW_BEGIN_M, HS_START_M,     HS_START | DIR_CCW}
 };
 
 /*
