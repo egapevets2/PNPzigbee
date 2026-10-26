@@ -82,13 +82,24 @@ static volatile int8_t s_axis_state[3]    = {0, 0, 0};
 static volatile int8_t s_axis_reported[3] = {0, 0, 0};
 static volatile int16_t s_axis_last_snapshot[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
 
+bool compass_check_latched_bus(esp_err_t err)
+{
+    return i2c_manager_check_latched_bus("COMPASS", err);
+}
+
 static esp_err_t compass_write_reg(uint8_t reg, uint8_t val)
 {
     if (s_dev_handle == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
     uint8_t tx_buf[2] = {reg, val};
-    return i2c_master_transmit(s_dev_handle, tx_buf, sizeof(tx_buf), pdMS_TO_TICKS(100));
+    esp_err_t ret = i2c_master_transmit(s_dev_handle, tx_buf, sizeof(tx_buf), pdMS_TO_TICKS(100));
+    if (ret != ESP_OK) {
+        compass_check_latched_bus(ret);
+    } else {
+        compass_check_latched_bus(ESP_OK);
+    }
+    return ret;
 }
 
 esp_err_t compass_init(uint8_t i2c_addr)
@@ -198,8 +209,10 @@ esp_err_t compass_read_mag(int16_t *x, int16_t *y, int16_t *z)
 
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to read magnetic field registers: %s", esp_err_to_name(ret));
+        compass_check_latched_bus(ret);
         return ret;
     }
+    compass_check_latched_bus(ESP_OK);
 
     // Data is 16-bit 2's complement, little-endian: [LSB, MSB]
     if (x) *x = (int16_t)(((uint16_t)data[1] << 8) | data[0]);

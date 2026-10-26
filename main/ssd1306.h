@@ -71,6 +71,13 @@ esp_err_t ssd1306_print_at(int line_idx, int size_pt, const char *text);
 esp_err_t ssd1306_update(void);
 
 /**
+ * @brief Latched-bus detector for SSD1306 OLED display.
+ *        Evaluates I2C transmission status and bus line states.
+ *        If latched bus detected, sends upstream alert to coordinator and initiates recovery.
+ */
+bool ssd1306_check_latched_bus(esp_err_t err);
+
+/**
  * @brief Command router checks.
  */
 bool ssd1306_is_cmd(const char *cmd);

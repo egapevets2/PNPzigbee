@@ -99,6 +99,13 @@ esp_err_t i2cmux_get_mask_addr(uint8_t i2c_addr, uint8_t *mask);
 int8_t i2cmux_get_selected_channel(void);
 
 /**
+ * @brief Latched-bus detector for TCA9548A multiplexer.
+ *        Evaluates I2C transaction status and bus line states.
+ *        If latched bus detected, sends upstream alert to coordinator and initiates recovery.
+ */
+bool i2cmux_check_latched_bus(esp_err_t err);
+
+/**
  * @brief Check if the command name belongs to I2Cmux.
  */
 bool i2cmux_is_cmd(const char *cmd);

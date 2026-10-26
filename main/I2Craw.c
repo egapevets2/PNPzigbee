@@ -83,6 +83,11 @@ static esp_err_t ensure_device_handle(uint8_t addr)
     return ret;
 }
 
+bool I2Craw_check_latched_bus(esp_err_t err)
+{
+    return i2c_manager_check_latched_bus("I2CRAW", err);
+}
+
 bool I2Craw_is_cmd(const char *cmd)
 {
     if (!cmd) return false;
@@ -111,9 +116,12 @@ bool I2Craw_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool tex
             return true;
         }
         uint8_t data[2] = {(uint8_t)value, (uint8_t)value2};
-        if (i2c_master_transmit(current_dev_handle, data, 2, pdMS_TO_TICKS(100)) == ESP_OK) {
+        esp_err_t ret = i2c_master_transmit(current_dev_handle, data, 2, pdMS_TO_TICKS(100));
+        if (ret == ESP_OK) {
+            I2Craw_check_latched_bus(ESP_OK);
             if (!text_message) mesh_zigbee_send_text("I2C WR OK");
         } else {
+            I2Craw_check_latched_bus(ret);
             if (!text_message) mesh_zigbee_send_text("I2C WR FAIL");
         }
         return true;
@@ -125,10 +133,13 @@ bool I2Craw_execute_cmd(const char *cmd, int16_t value, int16_t value2, bool tex
         }
         uint8_t reg = (uint8_t)value;
         uint8_t data = 0;
-        if (i2c_master_transmit_receive(current_dev_handle, &reg, 1, &data, 1, pdMS_TO_TICKS(100)) == ESP_OK) {
+        esp_err_t ret = i2c_master_transmit_receive(current_dev_handle, &reg, 1, &data, 1, pdMS_TO_TICKS(100));
+        if (ret == ESP_OK) {
+            I2Craw_check_latched_bus(ESP_OK);
             snprintf(reply, sizeof(reply), "I2Cval %d %d", reg, data);
             mesh_zigbee_send_text(reply);
         } else {
+            I2Craw_check_latched_bus(ret);
             mesh_zigbee_send_text("I2C RD FAIL");
         }
         return true;

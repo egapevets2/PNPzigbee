@@ -69,6 +69,11 @@ typedef struct {
 static expand8_instance_t s_instances[EXPAND8_MAX_INSTANCES] = {0};
 static int s_active_idx = -1;
 
+bool expand8_check_latched_bus(esp_err_t err)
+{
+    return i2c_manager_check_latched_bus("EXPAND8", err);
+}
+
 static uint8_t probe_pcf8574_address(i2c_master_bus_handle_t bus)
 {
     // 1. Probe standard PCF8574 address range (0x20 .. 0x27)
@@ -176,8 +181,10 @@ esp_err_t expand8_init(uint8_t i2c_addr)
     ret = i2c_master_transmit(inst->dev_handle, &inst->port_state, 1, pdMS_TO_TICKS(100));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to write initial port state to 0x%02X: %s", target_addr, esp_err_to_name(ret));
+        expand8_check_latched_bus(ret);
         return ret;
     }
+    expand8_check_latched_bus(ESP_OK);
 
     ESP_LOGI(TAG, "PCF8574 instance[%d] initialized at address 0x%02X (%d), port state 0x%02X",
              slot, inst->i2c_addr, inst->i2c_addr, inst->port_state);
@@ -235,8 +242,10 @@ esp_err_t expand8_write_bit_addr(uint8_t i2c_addr, uint8_t bit, uint8_t val)
     esp_err_t ret = i2c_master_transmit(inst->dev_handle, &inst->port_state, 1, pdMS_TO_TICKS(100));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to write bit %d to 0x%02X: %s", bit, inst->i2c_addr, esp_err_to_name(ret));
+        expand8_check_latched_bus(ret);
         return ret;
     }
+    expand8_check_latched_bus(ESP_OK);
 
     ESP_LOGI(TAG, "Expand8[0x%02X] bit %d set to %d (port=0x%02X)", inst->i2c_addr, bit, val ? 1 : 0, inst->port_state);
     return ESP_OK;
@@ -263,8 +272,10 @@ esp_err_t expand8_read_bit_addr(uint8_t i2c_addr, uint8_t bit, uint8_t *val)
     esp_err_t ret = i2c_master_receive(inst->dev_handle, &port_val, 1, pdMS_TO_TICKS(100));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to read port from 0x%02X: %s", inst->i2c_addr, esp_err_to_name(ret));
+        expand8_check_latched_bus(ret);
         return ret;
     }
+    expand8_check_latched_bus(ESP_OK);
 
     *val = (port_val >> bit) & 0x01;
     ESP_LOGI(TAG, "Expand8[0x%02X] read bit %d = %d (port=0x%02X)", inst->i2c_addr, bit, *val, port_val);
@@ -288,8 +299,10 @@ esp_err_t expand8_write_port_addr(uint8_t i2c_addr, uint8_t port_val)
     esp_err_t ret = i2c_master_transmit(inst->dev_handle, &inst->port_state, 1, pdMS_TO_TICKS(100));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to write port to 0x%02X: %s", inst->i2c_addr, esp_err_to_name(ret));
+        expand8_check_latched_bus(ret);
         return ret;
     }
+    expand8_check_latched_bus(ESP_OK);
 
     ESP_LOGI(TAG, "Expand8[0x%02X] port set to 0x%02X", inst->i2c_addr, inst->port_state);
     return ESP_OK;
@@ -312,8 +325,10 @@ esp_err_t expand8_read_port_addr(uint8_t i2c_addr, uint8_t *port_val)
     esp_err_t ret = i2c_master_receive(inst->dev_handle, port_val, 1, pdMS_TO_TICKS(100));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to read port from 0x%02X: %s", inst->i2c_addr, esp_err_to_name(ret));
+        expand8_check_latched_bus(ret);
         return ret;
     }
+    expand8_check_latched_bus(ESP_OK);
 
     ESP_LOGI(TAG, "Expand8[0x%02X] port read 0x%02X", inst->i2c_addr, *port_val);
     return ESP_OK;

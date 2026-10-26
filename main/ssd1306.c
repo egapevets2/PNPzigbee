@@ -143,6 +143,11 @@ static void ssd1306_draw_char(int16_t x, int16_t y, unsigned char c, const GFXfo
     }
 }
 
+bool ssd1306_check_latched_bus(esp_err_t err)
+{
+    return i2c_manager_check_latched_bus("SSD1306", err);
+}
+
 esp_err_t ssd1306_update(void)
 {
     if (s_dev_handle == NULL) {
@@ -158,6 +163,7 @@ esp_err_t ssd1306_update(void)
     esp_err_t ret = i2c_master_transmit(s_dev_handle, reset_addr_cmds, sizeof(reset_addr_cmds), pdMS_TO_TICKS(100));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set column/page address: %s", esp_err_to_name(ret));
+        ssd1306_check_latched_bus(ret);
         return ret;
     }
 
@@ -169,9 +175,11 @@ esp_err_t ssd1306_update(void)
     ret = i2c_master_transmit(s_dev_handle, tx_data_buf, sizeof(tx_data_buf), pdMS_TO_TICKS(200));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to transmit display buffer: %s", esp_err_to_name(ret));
+        ssd1306_check_latched_bus(ret);
         return ret;
     }
 
+    ssd1306_check_latched_bus(ESP_OK);
     return ESP_OK;
 }
 
@@ -242,6 +250,7 @@ esp_err_t ssd1306_init(uint8_t i2c_addr)
     ret = i2c_master_transmit(s_dev_handle, init_cmds, sizeof(init_cmds), pdMS_TO_TICKS(100));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to send initialization commands to SSD1306: %s", esp_err_to_name(ret));
+        ssd1306_check_latched_bus(ret);
         return ret;
     }
 

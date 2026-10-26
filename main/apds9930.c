@@ -102,6 +102,7 @@ esp_err_t apds9930_config(void)
         if (ret != ESP_OK)
         {
             ESP_LOGE(TAG, "Failed to write setup register 0x%02x: %s", setup[i][0] & ~0x80, esp_err_to_name(ret));
+            apds9930_check_latched_bus(ret);
             return ret;
         }
     }
@@ -149,6 +150,11 @@ esp_err_t apds9930_init(void)
     return apds9930_config();
 }
 
+bool apds9930_check_latched_bus(esp_err_t err)
+{
+    return i2c_manager_check_latched_bus("APDS9930", err);
+}
+
 esp_err_t apds9930_read_proximity(uint16_t *proximity)
 {
     if (dev_handle == NULL || proximity == NULL) return ESP_ERR_INVALID_STATE;
@@ -156,6 +162,12 @@ esp_err_t apds9930_read_proximity(uint16_t *proximity)
     uint8_t reg = 0xA0 | 0x18;
     uint8_t data[2] = {0};
     esp_err_t ret = i2c_master_transmit_receive(dev_handle, &reg, 1, data, 2, pdMS_TO_TICKS(100));
+
+    if (ret != ESP_OK) {
+        apds9930_check_latched_bus(ret);
+        return ret;
+    }
+    apds9930_check_latched_bus(ESP_OK);
 
     *proximity = data[0] + (256 * data[1]);
 

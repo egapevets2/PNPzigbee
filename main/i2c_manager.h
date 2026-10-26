@@ -44,6 +44,35 @@ i2c_master_bus_handle_t get_shared_i2c_bus(void);
  */
 esp_err_t i2c_manager_deinit_bus(void);
 
+/**
+ * @brief Checks if the shared I2C bus is currently physically latched (SDA or SCL stuck LOW).
+ * @param[out] sda_level Pointer to store SDA line level (or NULL).
+ * @param[out] scl_level Pointer to store SCL line level (or NULL).
+ * @return true if SDA or SCL is stuck LOW (bus latched), false if both are HIGH (healthy/idle).
+ */
+bool i2c_manager_is_bus_latched(int *sda_level, int *scl_level);
+
+/**
+ * @brief Latched bus detector function for I2C peripherals.
+ *        Evaluates an operation's return code and bus line states.
+ *        If a bus failure or latched state is detected:
+ *          1. Logs the failure with device context.
+ *          2. Sends an upstream alert to the coordinator: "I2C BUS LATCHED: <device_name> (SDA=%d SCL=%d)"
+ *          3. Attempts automatic bus recovery (clock pulsing + bus reset).
+ *
+ * @param device_name Name of the calling I2C peripheral (e.g. "SSD1306", "EXPAND8", etc.)
+ * @param err Return code from the last I2C operation (e.g. i2c_master_transmit).
+ * @return true if the bus was detected as latched/failed, false if healthy.
+ */
+bool i2c_manager_check_latched_bus(const char *device_name, esp_err_t err);
+
+/**
+ * @brief Attempts hardware bus recovery (generates SCL clock pulses to release stuck slaves,
+ *        followed by STOP condition and master bus reset).
+ * @return ESP_OK if recovered and lines are now HIGH, or ESP_FAIL if still latched.
+ */
+esp_err_t i2c_manager_recover_bus(void);
+
 #ifdef __cplusplus
 }
 #endif

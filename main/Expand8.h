@@ -82,6 +82,13 @@ esp_err_t expand8_read_port_addr(uint8_t i2c_addr, uint8_t *port_val);
 esp_err_t expand8_read_port(uint8_t *port_val);
 
 /**
+ * @brief Latched-bus detector for PCF8574/A Expand8.
+ *        Evaluates I2C operation status and bus line states.
+ *        If latched bus detected, sends upstream alert to coordinator and initiates recovery.
+ */
+bool expand8_check_latched_bus(esp_err_t err);
+
+/**
  * @brief Check if the command name belongs to Expand8.
  */
 bool expand8_is_cmd(const char *cmd);

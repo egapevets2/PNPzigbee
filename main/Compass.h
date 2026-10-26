@@ -38,6 +38,13 @@ esp_err_t compass_read_mag(int16_t *x, int16_t *y, int16_t *z);
 void compass_task(void *arg);
 
 /**
+ * @brief Latched-bus detector for QMC5883L / HMC5883L Compass.
+ *        Evaluates I2C transaction status and bus line states.
+ *        If latched bus detected, sends upstream alert to coordinator and initiates recovery.
+ */
+bool compass_check_latched_bus(esp_err_t err);
+
+/**
  * @brief Command router checks.
  */
 bool compass_is_cmd(const char *cmd);

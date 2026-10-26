@@ -49,6 +49,11 @@ static i2c_master_dev_handle_t s_mux_dev_handle = NULL;
 static uint8_t s_current_mask = 0;
 static bool s_initialized = false;
 
+bool i2cmux_check_latched_bus(esp_err_t err)
+{
+    return i2c_manager_check_latched_bus("I2CMUX", err);
+}
+
 static uint8_t probe_tca9548a_address(i2c_master_bus_handle_t bus)
 {
     for (uint8_t addr = TCA9548A_MIN_ADDR; addr <= TCA9548A_MAX_ADDR; addr++) {
@@ -129,10 +134,12 @@ esp_err_t i2cmux_init(uint8_t i2c_addr)
     if (ret == ESP_OK) {
         s_current_mask = 0x00;
         s_initialized = true;
+        i2cmux_check_latched_bus(ESP_OK);
         ESP_LOGI(TAG, "TCA9548A at 0x%02X initialized (all channels off)", s_current_addr);
     } else {
         ESP_LOGE(TAG, "Failed to write initial control byte to TCA9548A at 0x%02X: %s",
                  s_current_addr, esp_err_to_name(ret));
+        i2cmux_check_latched_bus(ret);
     }
     return ret;
 }
@@ -148,10 +155,12 @@ esp_err_t i2cmux_set_mask_addr(uint8_t i2c_addr, uint8_t mask)
     if (ret == ESP_OK) {
         s_current_mask = mask;
         s_initialized = true;
+        i2cmux_check_latched_bus(ESP_OK);
         ESP_LOGI(TAG, "TCA9548A (0x%02X) set mask = 0x%02X", s_current_addr, mask);
     } else {
         ESP_LOGE(TAG, "TCA9548A (0x%02X) transmit fail (mask 0x%02X): %s",
                  s_current_addr, mask, esp_err_to_name(ret));
+        i2cmux_check_latched_bus(ret);
     }
     return ret;
 }
@@ -195,9 +204,11 @@ esp_err_t i2cmux_get_mask_addr(uint8_t i2c_addr, uint8_t *mask)
     if (ret == ESP_OK) {
         s_current_mask = *mask;
         s_initialized = true;
+        i2cmux_check_latched_bus(ESP_OK);
         ESP_LOGI(TAG, "TCA9548A (0x%02X) read mask = 0x%02X", s_current_addr, *mask);
     } else {
         ESP_LOGE(TAG, "TCA9548A (0x%02X) receive fail: %s", s_current_addr, esp_err_to_name(ret));
+        i2cmux_check_latched_bus(ret);
     }
     return ret;
 }

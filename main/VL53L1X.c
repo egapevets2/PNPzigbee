@@ -89,6 +89,11 @@ esp_err_t vl53l1x_init(void)
     return ESP_OK;
 }
 
+bool vl53l1x_check_latched_bus(esp_err_t err)
+{
+    return i2c_manager_check_latched_bus("VL53L1X", err);
+}
+
 esp_err_t vl53l1x_read_distance(uint16_t *distance)
 {
     if (dev_handle == NULL || distance == NULL) return ESP_ERR_INVALID_STATE;
@@ -105,6 +110,9 @@ esp_err_t vl53l1x_read_distance(uint16_t *distance)
     
     if (ret == ESP_OK) {
         *distance = data[0]; // For a valid VL53L1X, this will return 0xEA
+        vl53l1x_check_latched_bus(ESP_OK);
+    } else {
+        vl53l1x_check_latched_bus(ret);
     }
 
     return ret;
