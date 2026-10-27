@@ -476,7 +476,16 @@ void app_main(void)
         ESP_ERROR_CHECK(serial_gateway_init());
     }
     else if (role == ROLE_END_DEVICE) {
-        ESP_LOGI(TAG, "Starting End Device personality ('%s')...", nvs_config_get_name());
+        const char *name = nvs_config_get_name();
+        if (!nvs_config_is_name_valid(name)) {
+            ESP_LOGE(TAG, "Cannot start End Device: valid unique node name is required. Reverting to workbench provisioning mode.");
+            mesh_serial_write("\r\n[ERROR] End Device cannot start without a unique name! Reverting to provisioning mode.\r\n");
+            mesh_serial_write("        Please assign a name: SetRole EndDevice <NodeName>\r\nworkbench> ");
+            light_driver_init(LIGHT_DEFAULT_OFF);
+            xTaskCreate(serial_console_task, "serial_console_task", 3072, NULL, 5, NULL);
+            return;
+        }
+        ESP_LOGI(TAG, "Starting End Device personality ('%s')...", name);
         ledc_manager_init();
         light_driver_init(LIGHT_DEFAULT_OFF);
         UpstreamQ_Init();

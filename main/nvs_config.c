@@ -215,6 +215,23 @@ const char *nvs_config_get_name(void)
     return s_config.node_name;
 }
 
+bool nvs_config_is_name_valid(const char *name)
+{
+    if (!name) return false;
+    size_t len = strlen(name);
+    if (len < 2 || len >= MESH_NAME_MAX_LEN) return false;
+    if (strcasecmp(name, "Node") == 0 || strcasecmp(name, "Unassigned") == 0 || strcasecmp(name, "default") == 0) {
+        return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (isspace(c) || iscntrl(c) || c == ',' || c == ':' || c == ';') {
+            return false;
+        }
+    }
+    return true;
+}
+
 esp_err_t nvs_config_set_name(const char *name)
 {
     if (!name || strlen(name) == 0 || strlen(name) >= MESH_NAME_MAX_LEN) {
@@ -470,6 +487,11 @@ bool nvs_config_handle_cli(const char *line)
         }
 
         if (strcasecmp(arg1, "Coordinator") == 0 || strcasecmp(arg1, "coord") == 0) {
+            const char *coord_name = (fields >= 3 && strlen(arg2) > 0) ? arg2 : "Coordinator";
+            mesh_serial_writef("[NVS] Writing name: \"%s\"... ", coord_name);
+            nvs_config_set_name(coord_name);
+            mesh_serial_write("OK\r\n");
+
             mesh_serial_write("[NVS] Writing role: COORDINATOR (2)... ");
             if (nvs_config_set_role(ROLE_COORDINATOR) == ESP_OK) {
                 mesh_serial_write("OK\r\n");
@@ -483,22 +505,40 @@ bool nvs_config_handle_cli(const char *line)
         }
 
         if (strcasecmp(arg1, "EndDevice") == 0 || strcasecmp(arg1, "node") == 0) {
-            mesh_serial_write("[NVS] Writing role: END_DEVICE (1)... ");
-            if (nvs_config_set_role(ROLE_END_DEVICE) == ESP_OK) {
-                mesh_serial_write("OK\r\n");
-            } else {
-                mesh_serial_write("FAILED\r\n");
+            if (fields < 3 || strlen(arg2) == 0) {
+                mesh_serial_write("[ERROR] Node name is required when provisioning as EndDevice.\r\n");
+                mesh_serial_write("        Usage: SetRole EndDevice <NodeName>\r\n");
+                mesh_serial_write("        Example: SetRole EndDevice Kitchen\r\n");
                 return true;
             }
 
-            if (fields >= 3 && strlen(arg2) > 0) {
-                mesh_serial_writef("[NVS] Writing name: \"%s\"... ", arg2);
-                if (nvs_config_set_name(arg2) == ESP_OK) {
-                    mesh_serial_write("OK\r\n");
+            if (!nvs_config_is_name_valid(arg2)) {
+                if (strcasecmp(arg2, "Node") == 0 || strcasecmp(arg2, "Unassigned") == 0 || strcasecmp(arg2, "default") == 0) {
+                    mesh_serial_writef("[ERROR] '%s' is a reserved default placeholder. Please specify a unique node name.\r\n", arg2);
+                } else if (strlen(arg2) < 2) {
+                    mesh_serial_write("[ERROR] Node name too short (minimum 2 characters)\r\n");
+                } else if (strlen(arg2) >= MESH_NAME_MAX_LEN) {
+                    mesh_serial_writef("[ERROR] Node name too long (maximum %d characters)\r\n", MESH_NAME_MAX_LEN - 1);
                 } else {
-                    mesh_serial_write("FAILED\r\n");
+                    mesh_serial_write("[ERROR] Invalid characters in node name (spaces and delimiters not allowed)\r\n");
                 }
+                return true;
             }
+
+            mesh_serial_writef("[NVS] Writing name: \"%s\"... ", arg2);
+            if (nvs_config_set_name(arg2) != ESP_OK) {
+                mesh_serial_write("FAILED\r\n");
+                return true;
+            }
+            mesh_serial_write("OK\r\n");
+
+            mesh_serial_write("[NVS] Writing role: END_DEVICE (1)... ");
+            if (nvs_config_set_role(ROLE_END_DEVICE) != ESP_OK) {
+                mesh_serial_write("FAILED\r\n");
+                return true;
+            }
+            mesh_serial_write("OK\r\n");
+
             mesh_serial_write("[NVS] Configuration committed successfully.\r\n");
             mesh_serial_write("[SYS] Restarting node in 1 second...\r\n");
             nvs_config_schedule_restart(1000);
@@ -529,8 +569,16 @@ bool nvs_config_handle_cli(const char *line)
             return true;
         }
 
-        if (strlen(arg1) > 16) {
-            mesh_serial_write("[ERROR] Node name too long (max 16 characters)\r\n");
+        if (!nvs_config_is_name_valid(arg1)) {
+            if (strcasecmp(arg1, "Node") == 0 || strcasecmp(arg1, "Unassigned") == 0 || strcasecmp(arg1, "default") == 0) {
+                mesh_serial_writef("[ERROR] '%s' is a reserved default placeholder. Please specify a unique node name.\r\n", arg1);
+            } else if (strlen(arg1) < 2) {
+                mesh_serial_write("[ERROR] Node name too short (minimum 2 characters)\r\n");
+            } else if (strlen(arg1) >= MESH_NAME_MAX_LEN) {
+                mesh_serial_writef("[ERROR] Node name too long (maximum %d characters)\r\n", MESH_NAME_MAX_LEN - 1);
+            } else {
+                mesh_serial_write("[ERROR] Invalid characters in node name (spaces and delimiters not allowed)\r\n");
+            }
             return true;
         }
 

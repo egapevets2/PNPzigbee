@@ -64,6 +64,15 @@ const char *nvs_config_get_name(void);
 esp_err_t nvs_config_set_name(const char *name);
 
 /**
+ * @brief Validates whether a proposed node name is acceptable for provisioning.
+ *        Requires length between 2 and 16 characters, alphanumeric/underscore/hyphen,
+ *        and rejects reserved placeholders ("Node", "Unassigned", "Default").
+ * @param name Candidate name string.
+ * @return true if valid, false if invalid/reserved.
+ */
+bool nvs_config_is_name_valid(const char *name);
+
+/**
  * @brief Get the configured 2.4 GHz RF channel (1..14).
  */
 uint8_t nvs_config_get_channel(void);
