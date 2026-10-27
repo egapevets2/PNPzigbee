@@ -12,6 +12,19 @@ extern "C" {
 #define MESH_TEXT_LEN 18
 #define MESH_LINE_LEN 80
 
+/**
+ * Silence timeout (ms) before declaring connection to coordinator lost.
+ * Idle heartbeats occur every ~1.0–1.5s; 6000ms tolerates 3 missing heartbeats
+ * (4 intervals * ~1.5s = 6.0s) before marking connection severed.
+ */
+#define MESH_COORDINATOR_SILENCE_TIMEOUT_MS     6000
+
+/**
+ * Maximum consecutive transmission failures to coordinator before declaring
+ * connection severed. Tolerates 3 missing heartbeats (severs on 4th consecutive fail).
+ */
+#define MESH_COORDINATOR_MAX_CONSECUTIVE_FAILS  4
+
 typedef struct
 {
     char source[MESH_TEXT_LEN];

@@ -133,8 +133,9 @@ bool mesh_zigbee_is_coordinator_connected(void)
     if (!s_coordinator_connected) {
         return false;
     }
-    // If more than 2000ms have elapsed since last confirmed coordinator contact, mark severed
-    if ((xTaskGetTickCount() - s_last_coord_contact_tick) > pdMS_TO_TICKS(2000)) {
+    // If more than MESH_COORDINATOR_SILENCE_TIMEOUT_MS (6.0s) have elapsed since last confirmed
+    // coordinator contact, mark severed. Tolerates three missing heartbeats (~1.0–1.5s each).
+    if ((xTaskGetTickCount() - s_last_coord_contact_tick) > pdMS_TO_TICKS(MESH_COORDINATOR_SILENCE_TIMEOUT_MS)) {
         s_coordinator_connected = false;
         return false;
     }
@@ -248,7 +249,7 @@ static void espnow_send_cb(const esp_now_send_info_t *tx_info, esp_now_send_stat
     } else {
         if (s_last_tx_to_coordinator) {
             s_consecutive_send_fails++;
-            if (s_consecutive_send_fails >= 2) {
+            if (s_consecutive_send_fails >= MESH_COORDINATOR_MAX_CONSECUTIVE_FAILS) {
                 s_coordinator_connected = false;
             }
         }

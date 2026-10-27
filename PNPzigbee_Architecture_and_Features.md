@@ -403,7 +403,7 @@ Provides 4 independent hardware-timed PWM channels (`PWM1`–`PWM4`, [`pwm_drive
   - **Autonomous Link Loss Detection Engine:**
     - Spoke nodes execute a background connection monitoring loop in `discovery_node_task` polling every **500 ms**.
     - If no frame has been received from the Coordinator for $\ge 1000\text{ ms}$, the spoke dispatches a unicast `HELLO` probe to the Coordinator's learned MAC address.
-    - **Trigger Conditions:** If 2 consecutive unicast transmissions fail hardware 802.11 MAC ACK (`ESP_NOW_SEND_FAIL`), or if no inbound communication from the Coordinator occurs for $> 2.0\text{ s}$ (`2000 ms`), the spoke declares the connection **severed** (`mesh_zigbee_is_coordinator_connected() == false`).
+    - **Trigger Conditions:** If 4 consecutive unicast transmissions fail hardware 802.11 MAC ACK (`ESP_NOW_SEND_FAIL`), or if no inbound communication from the Coordinator occurs for $> 6.0\text{ s}$ (`6000 ms`), the spoke declares the connection **severed** (`mesh_zigbee_is_coordinator_connected() == false`), cleanly tolerating up to 3 missing background heartbeats (~1.0–1.5 s each) without false disconnects.
   - **Blink Waveform & Hardware Task:**
     - Serviced by a dedicated FreeRTOS background task `rfdrop_blink_task` (Priority 4, 2048 B stack) running on a **125 ms tick** (`vTaskDelay(pdMS_TO_TICKS(125))`).
     - While severed, the task alternates the pin level between `1` and `0` every 125 ms (period = 250 ms = **4 Hz on/off, 50% duty cycle**). Compatible with both active-HIGH and common-anode active-LOW LEDs (such as Garage Pin 18).
@@ -1454,7 +1454,7 @@ $$\text{Runtime} = \frac{\text{Battery Capacity}}{I_{\text{batt}}} = \frac{2400\
 
 Implementing power-saving sleep modes (such as periodic deep-sleep polling, 802.11 beacon synchronization, or slotted Aloha wakeups) would introduce substantial operational liabilities:
 * **Command Latency & Throttle Lag:** Sleep duty cycles introduce $100\text{--}500\,\text{ms}$ of response jitter, making analog throttle detents and emergency stops sluggish.
-* **Safety & RF-Loss Reaction:** Continuous reception guarantees instant fail-safe actuation (e.g. `RFdropBlink` link severance detection and gentle Cytron motor stop within $1.0\text{--}2.0\,\text{s}$).
+* **Safety & RF-Loss Reaction:** Continuous reception guarantees fail-safe actuation (e.g. `RFdropBlink` link severance detection and gentle Cytron motor stop after tolerating 3 missing heartbeats within $\sim 6.0\,\text{s}$).
 * **Firmware Simplicity & Determinism:** Keeping the receiver active preserves deterministic sub-30ms round-trip execution, immediate LQI tracking, and unconstrained two-way communication without clock drift synchronization overhead.
 
 With **5.4 days of continuous runtime** on a single charge, the continuous-listening architecture achieves the optimal balance of immediate physical responsiveness, safety, and system simplicity.
