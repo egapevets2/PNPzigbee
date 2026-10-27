@@ -13,6 +13,8 @@ extern "C" {
 #define MESH_CFG_NAMESPACE      "mesh_cfg"
 #define MESH_NAME_MAX_LEN       18
 #define DEFAULT_RF_CHANNEL      1
+#define MIN_TX_POWER_QDBM       8   // +2.0 dBm (8 * 0.25 dBm)
+#define MAX_TX_POWER_QDBM       84  // +21.0 dBm (84 * 0.25 dBm)
 #define DEFAULT_TX_POWER_QDBM   80  // +20.0 dBm (80 * 0.25 dBm)
 
 typedef enum {
@@ -91,6 +93,13 @@ esp_err_t nvs_config_get_coord_mac(uint8_t mac[6]);
  * @brief Set and commit the coordinator MAC address to NVS.
  */
 esp_err_t nvs_config_set_coord_mac(const uint8_t mac[6]);
+
+/**
+ * @brief Validates whether a proposed TX power in quarter-dBm is within allowable hardware range.
+ * @param tx_power Quarter-dBm value (8..84, corresponding to +2.0 dBm to +21.0 dBm).
+ * @return true if valid, false if out of range.
+ */
+bool nvs_config_is_tx_power_valid(int8_t tx_power);
 
 /**
  * @brief Get the configured maximum TX power in quarter-dBm units (80 = +20.0 dBm).

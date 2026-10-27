@@ -148,7 +148,13 @@ esp_err_t nvs_config_init(void)
     // 5. Read TX Power
     int8_t pwr_val = 0;
     if (nvs_get_i8(handle, KEY_TX_POWER, &pwr_val) == ESP_OK) {
-        s_config.tx_power = pwr_val;
+        if (nvs_config_is_tx_power_valid(pwr_val)) {
+            s_config.tx_power = pwr_val;
+        } else {
+            ESP_LOGW(TAG, "Invalid TX power in NVS (%d qdBm, range %d..%d), resetting to default %d (+20.0 dBm)",
+                     pwr_val, MIN_TX_POWER_QDBM, MAX_TX_POWER_QDBM, DEFAULT_TX_POWER_QDBM);
+            s_config.tx_power = DEFAULT_TX_POWER_QDBM;
+        }
     }
 
     // 6. Read Long Range Mode
@@ -321,16 +327,30 @@ esp_err_t nvs_config_set_coord_mac(const uint8_t mac[6])
     return err;
 }
 
+bool nvs_config_is_tx_power_valid(int8_t tx_power)
+{
+    return (tx_power >= MIN_TX_POWER_QDBM && tx_power <= MAX_TX_POWER_QDBM);
+}
+
 int8_t nvs_config_get_tx_power(void)
 {
     if (!s_initialized) {
         nvs_config_init();
+    }
+    if (!nvs_config_is_tx_power_valid(s_config.tx_power)) {
+        s_config.tx_power = DEFAULT_TX_POWER_QDBM;
     }
     return s_config.tx_power;
 }
 
 esp_err_t nvs_config_set_tx_power(int8_t tx_power)
 {
+    if (!nvs_config_is_tx_power_valid(tx_power)) {
+        ESP_LOGE(TAG, "Invalid TX power: %d qdBm (valid range %d..%d)",
+                 tx_power, MIN_TX_POWER_QDBM, MAX_TX_POWER_QDBM);
+        return ESP_ERR_INVALID_ARG;
+    }
+
     nvs_handle_t handle;
     esp_err_t err = nvs_open(MESH_CFG_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) return err;
@@ -618,13 +638,16 @@ bool nvs_config_handle_cli(const char *line)
     // --- SetTxPower ---
     if (strcasecmp(cmd, "SetTxPower") == 0) {
         if (fields < 2) {
-            mesh_serial_write("[ERROR] Usage: SetTxPower <quarter_dbm> (e.g. 80 for +20 dBm)\r\n");
+            mesh_serial_writef("[ERROR] Usage: SetTxPower <quarter_dbm> (e.g. %d for +%.1f dBm)\r\n",
+                               DEFAULT_TX_POWER_QDBM, DEFAULT_TX_POWER_QDBM * 0.25f);
             return true;
         }
 
         int pwr = atoi(arg1);
-        if (pwr < 8 || pwr > 84) {
-            mesh_serial_write("[ERROR] TX power out of range (8 to 84 quarter-dBm, +2 to +21 dBm)\r\n");
+        if (!nvs_config_is_tx_power_valid((int8_t)pwr) || pwr < MIN_TX_POWER_QDBM || pwr > MAX_TX_POWER_QDBM) {
+            mesh_serial_writef("[ERROR] TX power out of range (%d to %d quarter-dBm, +%.1f to +%.1f dBm)\r\n",
+                               MIN_TX_POWER_QDBM, MAX_TX_POWER_QDBM,
+                               MIN_TX_POWER_QDBM * 0.25f, MAX_TX_POWER_QDBM * 0.25f);
             return true;
         }
 

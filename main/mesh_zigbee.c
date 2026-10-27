@@ -328,7 +328,13 @@ esp_err_t mesh_radio_init(void)
         protocol |= WIFI_PROTOCOL_LR;
     }
     ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, protocol));
-    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(nvs_config_get_tx_power()));
+    int8_t tx_power = nvs_config_get_tx_power();
+    esp_err_t pwr_err = esp_wifi_set_max_tx_power(tx_power);
+    if (pwr_err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_set_max_tx_power(%d) failed: %s, falling back to %d",
+                 tx_power, esp_err_to_name(pwr_err), DEFAULT_TX_POWER_QDBM);
+        ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(DEFAULT_TX_POWER_QDBM));
+    }
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
     // Re-assert RF switch after Wi-Fi start in case Wi-Fi init affected pin configuration
