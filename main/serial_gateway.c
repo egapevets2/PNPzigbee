@@ -132,10 +132,22 @@ static void parse_console_line_to_mesh_msg(const char *line, mesh_msg_t *msg)
         strncpy(msg->cmd, cmd, sizeof(msg->cmd) - 1);
     }
     if (fields >= 3) {
-        msg->value = (int16_t)value;
+        if (value > INT16_MAX) {
+            msg->value = INT16_MAX;
+        } else if (value < INT16_MIN) {
+            msg->value = INT16_MIN;
+        } else {
+            msg->value = (int16_t)value;
+        }
     }
     if (fields >= 4) {
-        msg->value2 = (int16_t)value2;
+        if (value2 > INT16_MAX) {
+            msg->value2 = INT16_MAX;
+        } else if (value2 < INT16_MIN) {
+            msg->value2 = INT16_MIN;
+        } else {
+            msg->value2 = (int16_t)value2;
+        }
     }
 }
 

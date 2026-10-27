@@ -38,6 +38,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -94,7 +95,17 @@ static bool parse_int_token(const char *tok, int16_t *out)
     int base = (strncmp(tok, "0x", 2) == 0 || strncmp(tok, "0X", 2) == 0) ? 16 : 10;
     long val = strtol(tok, &endp, base);
     if (endp == tok) return false;
-    *out = (int16_t)val;
+    if (val > INT16_MAX) {
+        ESP_LOGW(TAG, "Integer token '%s' (%ld) exceeds INT16_MAX (%d), clamping to %d",
+                 tok, val, (int)INT16_MAX, (int)INT16_MAX);
+        *out = INT16_MAX;
+    } else if (val < INT16_MIN) {
+        ESP_LOGW(TAG, "Integer token '%s' (%ld) below INT16_MIN (%d), clamping to %d",
+                 tok, val, (int)INT16_MIN, (int)INT16_MIN);
+        *out = INT16_MIN;
+    } else {
+        *out = (int16_t)val;
+    }
     return true;
 }
 
@@ -168,7 +179,13 @@ static bool parse_text_for_local_action(const char *line, char *cmd, size_t cmd_
             int base = (strncmp(p, "0x", 2) == 0 || strncmp(p, "0X", 2) == 0) ? 16 : 10;
             long val = strtol(p, &endp, base);
             if (endp != p) {
-                *value1 = (int16_t)val;
+                if (val > INT16_MAX) {
+                    *value1 = INT16_MAX;
+                } else if (val < INT16_MIN) {
+                    *value1 = INT16_MIN;
+                } else {
+                    *value1 = (int16_t)val;
+                }
                 p = endp;
                 while (*p == ' ') p++;
             }
