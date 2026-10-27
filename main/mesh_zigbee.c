@@ -317,25 +317,25 @@ esp_err_t mesh_radio_init(void)
     xiao_rf_switch_init();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "esp_wifi_init failed");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "esp_wifi_set_storage failed");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "esp_wifi_set_mode failed");
+    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "esp_wifi_start failed");
     uint8_t target_chan = nvs_config_get_channel();
-    ESP_ERROR_CHECK(esp_wifi_set_channel(target_chan, WIFI_SECOND_CHAN_NONE));
+    ESP_RETURN_ON_ERROR(esp_wifi_set_channel(target_chan, WIFI_SECOND_CHAN_NONE), TAG, "esp_wifi_set_channel failed");
     uint8_t protocol = WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N;
     if (nvs_config_get_lr_mode()) {
         protocol |= WIFI_PROTOCOL_LR;
     }
-    ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, protocol));
+    ESP_RETURN_ON_ERROR(esp_wifi_set_protocol(WIFI_IF_STA, protocol), TAG, "esp_wifi_set_protocol failed");
     int8_t tx_power = nvs_config_get_tx_power();
     esp_err_t pwr_err = esp_wifi_set_max_tx_power(tx_power);
     if (pwr_err != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_set_max_tx_power(%d) failed: %s, falling back to %d",
                  tx_power, esp_err_to_name(pwr_err), DEFAULT_TX_POWER_QDBM);
-        ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(DEFAULT_TX_POWER_QDBM));
+        esp_wifi_set_max_tx_power(DEFAULT_TX_POWER_QDBM);
     }
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG, "esp_wifi_set_ps failed");
 
     // Re-assert RF switch after Wi-Fi start in case Wi-Fi init affected pin configuration
     xiao_rf_switch_init();
@@ -350,7 +350,7 @@ esp_err_t mesh_radio_init(void)
     ESP_LOGI(TAG, "RF Switch pins: PWR(GPIO3)=%d, SEL(GPIO14)=%d",
              gpio_get_level(XIAO_RF_SWITCH_PWR_GPIO), gpio_get_level(XIAO_RF_SWITCH_SEL_GPIO));
 
-    ESP_ERROR_CHECK(esp_now_init());
+    ESP_RETURN_ON_ERROR(esp_now_init(), TAG, "esp_now_init failed");
 
     s_radio_initialized = true;
     return ESP_OK;
@@ -358,7 +358,7 @@ esp_err_t mesh_radio_init(void)
 
 esp_err_t mesh_zigbee_init(void)
 {
-    ESP_ERROR_CHECK(mesh_radio_init());
+    ESP_RETURN_ON_ERROR(mesh_radio_init(), TAG, "mesh_radio_init failed");
 
     if (!s_mesh_rx_queue) {
         s_mesh_rx_queue = xQueueCreate(MESH_RX_QUEUE_LEN, sizeof(mesh_msg_t));
@@ -368,8 +368,8 @@ esp_err_t mesh_zigbee_init(void)
     }
     ESP_RETURN_ON_FALSE(s_mesh_rx_queue && s_mesh_tx_queue, ESP_FAIL, TAG, "Failed to create queues");
 
-    ESP_ERROR_CHECK(esp_now_register_recv_cb(espnow_recv_cb));
-    ESP_ERROR_CHECK(esp_now_register_send_cb(espnow_send_cb));
+    ESP_RETURN_ON_ERROR(esp_now_register_recv_cb(espnow_recv_cb), TAG, "register recv_cb failed");
+    ESP_RETURN_ON_ERROR(esp_now_register_send_cb(espnow_send_cb), TAG, "register send_cb failed");
 
     ensure_peer_exists(s_broadcast_mac);
 
@@ -385,7 +385,7 @@ esp_err_t mesh_zigbee_init(void)
 
     init_local_node_name();
 
-    ESP_ERROR_CHECK(discovery_node_init());
+    ESP_RETURN_ON_ERROR(discovery_node_init(), TAG, "discovery_node_init failed");
 
     s_joined = true;
     uint8_t primary_chan = 0;

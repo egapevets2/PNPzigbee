@@ -648,13 +648,13 @@ static void coord_app_msg_task(void *arg)
 
 esp_err_t serial_gateway_init(void)
 {
-    ESP_ERROR_CHECK(mesh_radio_init());
-    ESP_ERROR_CHECK(coord_init_queues());
+    ESP_RETURN_ON_ERROR(mesh_radio_init(), TAG, "Failed to initialize mesh radio");
+    ESP_RETURN_ON_ERROR(coord_init_queues(), TAG, "Failed to create coordinator queues");
 
-    ESP_ERROR_CHECK(esp_now_register_recv_cb(coord_espnow_recv_cb));
-    ESP_ERROR_CHECK(esp_now_register_send_cb(coord_espnow_send_cb));
+    ESP_RETURN_ON_ERROR(esp_now_register_recv_cb(coord_espnow_recv_cb), TAG, "Failed to register recv cb");
+    ESP_RETURN_ON_ERROR(esp_now_register_send_cb(coord_espnow_send_cb), TAG, "Failed to register send cb");
 
-    ESP_ERROR_CHECK(discovery_coord_init());
+    ESP_RETURN_ON_ERROR(discovery_coord_init(), TAG, "Failed to initialize coordinator discovery");
 
     ESP_LOGI(TAG, "ESP-NOW Coordinator gateway initialized on Channel %d", nvs_config_get_channel());
 

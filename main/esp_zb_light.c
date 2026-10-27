@@ -251,6 +251,7 @@ static void serial_console_task(void *arg)
             }
 
             if (strncmp(line, "sniff ", 6) == 0) {
+                mesh_radio_init();
                 int en = atoi(line + 6);
                 mesh_zigbee_set_sniffer(en != 0);
                 mesh_serial_writef("sniffer: %d\r\n", en);
@@ -260,6 +261,7 @@ static void serial_console_task(void *arg)
             }
 
             if (strcmp(line, "scan") == 0) {
+                mesh_radio_init();
                 mesh_serial_write("Scanning Wi-Fi...\r\n");
                 wifi_scan_config_t scan_cfg = {0};
                 esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
@@ -468,12 +470,15 @@ void app_main(void)
              nvs_config_get_name(),
              nvs_config_get_channel());
 
-    // Initialize unified radio hardware (Wi-Fi STA, LR PHY, RF switch, ESP-NOW)
-    ESP_ERROR_CHECK(mesh_radio_init());
-
     if (role == ROLE_COORDINATOR) {
         ESP_LOGI(TAG, "Starting Coordinator personality...");
-        ESP_ERROR_CHECK(serial_gateway_init());
+        esp_err_t err = serial_gateway_init();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to start Coordinator (%s). Reverting to workbench provisioning mode.", esp_err_to_name(err));
+            mesh_serial_writef("\r\n[ERROR] Coordinator startup failed (%s)! Reverting to provisioning mode.\r\nworkbench> ", esp_err_to_name(err));
+            light_driver_init(LIGHT_DEFAULT_OFF);
+            xTaskCreate(serial_console_task, "serial_console_task", 3072, NULL, 5, NULL);
+        }
     }
     else if (role == ROLE_END_DEVICE) {
         const char *name = nvs_config_get_name();
@@ -491,7 +496,14 @@ void app_main(void)
         UpstreamQ_Init();
         GPIO_Handler_Init();
         motor_driver_start_task();
-        ESP_ERROR_CHECK(mesh_zigbee_init());
+
+        esp_err_t err = mesh_zigbee_init();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to initialize mesh radio (%s). Reverting to workbench provisioning mode.", esp_err_to_name(err));
+            mesh_serial_writef("\r\n[ERROR] Mesh radio init failed (%s)! Reverting to provisioning mode.\r\nworkbench> ", esp_err_to_name(err));
+            xTaskCreate(serial_console_task, "serial_console_task", 3072, NULL, 5, NULL);
+            return;
+        }
 
         xTaskCreate(app_msg_task, "app_msg_task", 3072, NULL, 5, NULL);
         xTaskCreate(serial_console_task, "serial_console_task", 3072, NULL, 5, NULL);
