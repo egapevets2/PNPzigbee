@@ -2,13 +2,17 @@
  * discovery.c - Dynamic Node Discovery, Routing Table & Topology Management
  *
  * Purpose:
- *   Implements dynamic plug-and-play discovery and link quality tracking for the ESP-NOW
- *   mesh network without hardcoded MAC addresses.
- *   - End Devices: Broadcast a HELLO frame on boot and every 1 second until acknowledged
- *     by the coordinator with HELLO_ACK; maintain background keepalive/heartbeats.
- *   - Coordinator: Dynamically registers nodes into an in-memory routing table mapping
- *     logical names to 6-byte MAC addresses, 16-bit short addresses, RSSI/LQI metrics,
- *     and last-seen timestamps. Emits broadcast DISCOVER_ALL sweeps upon command or network reset.
+ *   Implements 2-layer dynamic plug-and-play discovery and link quality tracking for the ESP-NOW
+ *   star network without hardcoded MAC addresses.
+ *   - End Devices (disc_node_task): Broadcast a HELLO frame on boot with exponential backoff
+ *     (500, 1000, 2000, 5000, 10000 ms) until acknowledged by the coordinator with HELLO_ACK
+ *     (persisting the learned Coordinator MAC in NVS). Once registered, a 500ms background
+ *     heartbeat monitor probes the Coordinator with a unicast HELLO whenever inbound traffic
+ *      has been silent for >= 1000ms.
+ *   - Coordinator: Dynamically registers up to ROUTING_TABLE_MAX_NODES (25) nodes into a mutex-
+ *     protected routing table mapping logical names to 6-byte MAC addresses, 16-bit short addresses,
+ *     bidirectional RSSI/LQI metrics, and last-seen timestamps, with LRU peer eviction in the
+ *     ESP-NOW hardware peer table when active nodes exceed peer table capacity.
  *
  * Supported Commands (Network Protocol & Control Frames):
  *   HELLO
@@ -18,7 +22,7 @@
  *     - Unicast response sent by Coordinator confirming registration and assigning short address.
  *
  *   DISCOVER_ALL
- *     - Layer 2 broadcast sweep frame sent by Coordinator prompting immediate HELLO replies from all nodes.
+ *     - Layer 2 broadcast sweep frame sent by Coordinator prompting jittered HELLO replies from all nodes.
  *
  *   (User-facing CLI commands interacting with discovery such as 'GiveNetworkReport', 'PingNetwork',
  *    and 'ResetNetwork' are handled via serial_gateway.c).
@@ -76,6 +80,48 @@ bool ensure_peer_exists(const uint8_t *mac)
     peer.encrypt = false;
 
     esp_err_t err = esp_now_add_peer(&peer);
+    if (err == ESP_ERR_ESPNOW_FULL) {
+        /*
+         * ESP-IDF's internal ESP-NOW peer list holds at most ESP_NOW_MAX_TOTAL_PEER_NUM (20)
+         * peers (1 broadcast + 19 unicast). To support up to ROUTING_TABLE_MAX_NODES (25)
+         * end-devices, evict the least-recently-seen unicast peer from ESP-NOW's driver cache
+         * (while preserving all 25 entries in s_table) and add the requested peer.
+         */
+        uint8_t evict_mac[ESP_NOW_ETH_ALEN] = {0};
+        bool found_victim = false;
+
+        if (s_table_mutex && xSemaphoreTake(s_table_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            TickType_t oldest_tick = UINT32_MAX;
+            for (size_t i = 0; i < s_table_count; i++) {
+                if (memcmp(s_table[i].mac, mac, ESP_NOW_ETH_ALEN) != 0 &&
+                    esp_now_is_peer_exist(s_table[i].mac)) {
+                    if (!found_victim || s_table[i].last_seen_tick < oldest_tick) {
+                        oldest_tick = s_table[i].last_seen_tick;
+                        memcpy(evict_mac, s_table[i].mac, ESP_NOW_ETH_ALEN);
+                        found_victim = true;
+                    }
+                }
+            }
+            xSemaphoreGive(s_table_mutex);
+        }
+
+        if (!found_victim) {
+            esp_now_peer_info_t victim = {0};
+            if (esp_now_fetch_peer(true, &victim) == ESP_OK) {
+                memcpy(evict_mac, victim.peer_addr, ESP_NOW_ETH_ALEN);
+                found_victim = true;
+            }
+        }
+
+        if (found_victim) {
+            esp_now_del_peer(evict_mac);
+            ESP_LOGD(TAG, "Evicted cached ESP-NOW peer %02x:%02x:%02x:%02x:%02x:%02x to make room",
+                     evict_mac[0], evict_mac[1], evict_mac[2],
+                     evict_mac[3], evict_mac[4], evict_mac[5]);
+            err = esp_now_add_peer(&peer);
+        }
+    }
+
     if (err != ESP_OK && err != ESP_ERR_ESPNOW_EXIST) {
         ESP_LOGE(TAG, "Failed to add peer %02x:%02x:%02x:%02x:%02x:%02x: %s",
                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], esp_err_to_name(err));
@@ -250,6 +296,11 @@ void routing_table_clear(void)
 {
     if (s_table_mutex) {
         xSemaphoreTake(s_table_mutex, portMAX_DELAY);
+        for (size_t i = 0; i < s_table_count; i++) {
+            if (esp_now_is_peer_exist(s_table[i].mac)) {
+                esp_now_del_peer(s_table[i].mac);
+            }
+        }
         memset(s_table, 0, sizeof(s_table));
         s_table_count = 0;
         xSemaphoreGive(s_table_mutex);

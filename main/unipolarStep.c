@@ -1,45 +1,53 @@
 /*
- * unipolarStep.c - 5-Wire Unipolar Stepper Motor Driver (28BYJ-48 / ULN2003)
+ * unipolarStep.c - 5-Wire Unipolar Stepper Motor Driver (28BYJ-48 / MOSFET or ULN2003)
  *
  * Purpose:
- *   Drives 5-wire unipolar stepper motors (28BYJ-48 with ULN2003 Darlington array) on Orange=GPIO 1,
+ *   Drives 5-wire unipolar stepper motors (e.g. Adafruit 28BYJ-48) on Orange=GPIO 1,
  *   Pink=GPIO 2, Yellow=GPIO 21, Blue=GPIO 0. Direct ESP-IDF port of the official Arduino Stepper
- *   library, enhanced with FreeRTOS background queue execution and trapezoidal acceleration/deceleration
- *   profiling between starting delay (Delay0) and cruise delay (Delay1).
+ *   library 4-wire sequence, enhanced with FreeRTOS background queue execution, automatic
+ *   Stepper_Deinit() mutual exclusion, automatic coil power-down on completion, and trapezoidal
+ *   acceleration/deceleration profiling between starting delay (Delay0) and cruise delay (Delay1).
+ *   All commands accept space-delimited or '=' assignment syntax.
  *
  * Supported Commands:
  *   SetupUnipolar
- *     Initializes GPIO pins, motion queue, and background stepping worker task.
+ *     Deinitializes any active bipolar stepper on shared pins, initializes GPIO pins, motion queue,
+ *     and background stepping worker task.
  *     Replies "SETUP UNIPOLAR OK".
  *
  *   UniStepFwd <steps>
- *     - steps: Number of steps to move forward with ramp profiling.
+ *     - steps: Number of cruise steps to move forward (plus 2 * AccelSteps ramp if enabled).
  *     Replies "GOT UNISTEPFWD <steps> OK".
  *
  *   UniStepBkw <steps> / UniiStepBkw <steps>
- *     - steps: Number of steps to move backward with ramp profiling.
+ *     - steps: Number of cruise steps to move backward (plus 2 * AccelSteps ramp if enabled).
  *     Replies "GOT UNISTEPBKW <steps> OK".
  *
  *   UniStepStop
- *     Immediately aborts active movement and turns off all 4 coil pins to prevent heating.
+ *     Immediately aborts active movement, flushes queue, and powers down all 4 coil pins.
  *     Replies "GOT UNISTEPSTOP OK".
  *
  *   UniStepDelay0 <ms> / UnitStepDelay0 <ms> / UniStepDelay <ms>
- *     - ms: Starting and ending step period in milliseconds for ramp profile (default 20ms).
+ *     - ms: Starting and ending step period in milliseconds for ramp profile (default 10ms).
+ *     Replies "GOT UNISTEPDELAY0 <ms> OK".
  *
  *   UniStepDelay1 <ms> / UnitStepDelay1 <ms>
- *     - ms: Constant velocity cruise step period in milliseconds (default 2ms).
+ *     - ms: Constant velocity cruise step period in milliseconds (default 10ms).
+ *     Replies "GOT UNISTEPDELAY1 <ms> OK".
  *
  *   AccelSteps <steps> / UniAccelSteps <steps>
- *     - steps: Number of steps to smoothly ramp between Delay0 and Delay1 (0 = constant speed).
+ *     - steps: Number of steps to smoothly ramp between Delay0 and Delay1 (0 = constant speed at Delay0).
+ *     Replies "GOT ACCELSTEPS <steps> OK".
  *
  *   UniStepMode <0|1>
- *     - 0: Standard 4-step sequence (matches Arduino Stepper.cpp).
+ *     - 0: Standard 4-step dual-coil sequence (default, matches Arduino Stepper.cpp).
  *     - 1: 8-step half-step sequence for smoother motion.
+ *     Replies "GOT UNISTEPMODE <0|1> OK".
  */
 
 #include "unipolarStep.h"
 #include "Stepper.h"
+#include "pwm_driver.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -289,10 +297,14 @@ void UnipolarStep_Deinit(void)
 
     UnipolarStep_PowerDown();
 
-    gpio_reset_pin(s_pin_orange);
-    gpio_reset_pin(s_pin_pink);
-    gpio_reset_pin(s_pin_yellow);
-    gpio_reset_pin(s_pin_blue);
+    int pins[4] = { s_pin_orange, s_pin_pink, s_pin_yellow, s_pin_blue };
+    for (int i = 0; i < 4; i++) {
+        if (pins[i] >= 0) {
+            gpio_reset_pin(pins[i]);
+            gpio_pullup_dis(pins[i]);
+            gpio_pulldown_dis(pins[i]);
+        }
+    }
 
     s_initialized = false;
     s_move_active = false;
@@ -303,18 +315,20 @@ void UnipolarStep_Deinit(void)
 
 void UnipolarStep_Init(void)
 {
-    // Cleanly deactivate bipolar stepper if it was running on the shared pins
+    // Cleanly deactivate bipolar stepper and general-purpose PWM channels if active
     Stepper_Deinit();
+    pwm_driver_deinit_all();
 
-    gpio_reset_pin(s_pin_orange);
-    gpio_reset_pin(s_pin_pink);
-    gpio_reset_pin(s_pin_yellow);
-    gpio_reset_pin(s_pin_blue);
-
-    gpio_set_direction(s_pin_orange, GPIO_MODE_OUTPUT);
-    gpio_set_direction(s_pin_pink,   GPIO_MODE_OUTPUT);
-    gpio_set_direction(s_pin_yellow, GPIO_MODE_OUTPUT);
-    gpio_set_direction(s_pin_blue,   GPIO_MODE_OUTPUT);
+    int pins[4] = { s_pin_orange, s_pin_pink, s_pin_yellow, s_pin_blue };
+    for (int i = 0; i < 4; i++) {
+        if (pins[i] >= 0) {
+            gpio_reset_pin(pins[i]);
+            gpio_pullup_dis(pins[i]);
+            gpio_pulldown_dis(pins[i]);
+            gpio_set_direction(pins[i], GPIO_MODE_OUTPUT);
+            gpio_set_level(pins[i], 0);
+        }
+    }
 
     UnipolarStep_PowerDown();
 

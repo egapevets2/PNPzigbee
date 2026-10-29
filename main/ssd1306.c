@@ -2,9 +2,10 @@
  * ssd1306.c - SSD1306 128x64 OLED Display Driver
  *
  * Purpose:
- *   Drives monochrome 128x64 I2C OLED displays over the shared I2C bus (default 7-bit address 0x3C).
+ *   Drives monochrome 128x64 I2C OLED displays over the shared I2C bus (default 7-bit address 0x3C / 60).
  *   Features a 1024-byte in-memory framebuffer, Adafruit GFX compatible proportional vector fonts
- *   (FreeMono 9pt, 12pt, 18pt, 24pt), automatic line clearing, text wrapping, and vertical cursor scrolling.
+ *   (FreeMono 9pt, 12pt, 18pt, 24pt), automatic line clearing, text wrapping, vertical cursor scrolling,
+ *   atomic multi-line rendering, and indexed line updates.
  *
  * Supported Commands:
  *   SetupDisp [addr] / SetupSSD1306 [addr]
@@ -22,6 +23,16 @@
  *     Clears current text line, renders text at active cursor baseline, pushes framebuffer to OLED,
  *     and advances cursor down by the font's vertical line height (wraps to top on overflow).
  *     Replies "PRINT OK" or "PRINT FAIL".
+ *
+ *   PrintLines <size_pt> <line1>|<line2>[|<line3>...]  (Aliases: Print2, Print3)
+ *     - Renders up to 4 pipe-separated ('|') lines in a single atomic framebuffer flush.
+ *     Replies "PRINT OK" or "PRINT FAIL".
+ *
+ *   PrintAt <line_idx> [size_pt] <text>
+ *     - line_idx: Vertical line index (0, 1, 2).
+ *     - size_pt: Font point size (default 9).
+ *     Renders text at the specified line index without clearing or disturbing other lines.
+ *     Replies "PRINT OK" or "PRINT FAIL".
  */
 
 #include "ssd1306.h"
@@ -37,6 +48,7 @@
 #include "freertos/task.h"
 
 #include "i2c_manager.h"
+#include "I2Cmux.h"
 #include "mesh_zigbee.h"
 
 #include "fonts/gfxfont.h"
@@ -154,25 +166,33 @@ esp_err_t ssd1306_update(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    // 1. Set column address (0-127) and page address (0-7) in a single command stream
+    i2cmux_lock();
+
+    // 1. Explicitly reset to Horizontal Addressing Mode (0x20, 0x00) and set
+    // column address (0-127) and page address (0-7).
+    // Transmitting 0x20, 0x00 on every update guarantees the controller is
+    // locked in Horizontal Mode even if the OLED underwent an unexpected brownout or reset.
     static const uint8_t reset_addr_cmds[] = {
         0x00,                               // Control byte: Command stream (Co=0, D/C#=0)
+        0x20, 0x00,                         // Set Memory Addressing Mode: Horizontal (0x00)
         0x21, 0, SSD1306_WIDTH - 1,         // Set Column Address: 0 to 127
-        0x22, 0, (SSD1306_HEIGHT / 8) - 1  // Set Page Address: 0 to 7
+        0x22, 0, (SSD1306_HEIGHT / 8) - 1   // Set Page Address: 0 to 7
     };
     esp_err_t ret = i2c_master_transmit(s_dev_handle, reset_addr_cmds, sizeof(reset_addr_cmds), pdMS_TO_TICKS(100));
     if (ret != ESP_OK) {
+        i2cmux_unlock();
         ESP_LOGE(TAG, "Failed to set column/page address: %s", esp_err_to_name(ret));
         ssd1306_check_latched_bus(ret);
         return ret;
     }
 
-    // 2. Send 1024 bytes of framebuffer data with 0x40 prefix
+    // 2. Send the entire 1024-byte framebuffer in one continuous burst with 0x40 prefix
     static uint8_t tx_data_buf[1 + sizeof(s_buffer)];
     tx_data_buf[0] = 0x40; // Data prefix: Co=0, D/C#=1
     memcpy(&tx_data_buf[1], s_buffer, sizeof(s_buffer));
 
     ret = i2c_master_transmit(s_dev_handle, tx_data_buf, sizeof(tx_data_buf), pdMS_TO_TICKS(200));
+    i2cmux_unlock();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to transmit display buffer: %s", esp_err_to_name(ret));
         ssd1306_check_latched_bus(ret);
@@ -198,29 +218,30 @@ esp_err_t ssd1306_init(uint8_t i2c_addr)
 
     uint8_t target_addr = (i2c_addr == 0) ? SSD1306_DEFAULT_I2C_ADDR : i2c_addr;
 
+    i2cmux_lock();
     esp_err_t probe_ret = i2c_master_probe(bus, target_addr, 50);
     if (probe_ret != ESP_OK) {
         ESP_LOGW(TAG, "SSD1306 probe at 0x%02X returned %s, attempting direct init", target_addr, esp_err_to_name(probe_ret));
     }
 
-    if (s_dev_handle != NULL) {
-        if (s_current_addr == target_addr) {
-            return ESP_OK;
-        }
+    if (s_dev_handle != NULL && s_current_addr != target_addr) {
         i2c_master_bus_rm_device(s_dev_handle);
         s_dev_handle = NULL;
     }
 
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = target_addr,
-        .scl_speed_hz = 100000,
-    };
+    if (s_dev_handle == NULL) {
+        i2c_device_config_t dev_cfg = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = target_addr,
+            .scl_speed_hz = 100000,
+        };
 
-    esp_err_t ret = i2c_master_bus_add_device(bus, &dev_cfg, &s_dev_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to add SSD1306 I2C device: %s", esp_err_to_name(ret));
-        return ret;
+        esp_err_t add_ret = i2c_master_bus_add_device(bus, &dev_cfg, &s_dev_handle);
+        if (add_ret != ESP_OK) {
+            i2cmux_unlock();
+            ESP_LOGE(TAG, "Failed to add SSD1306 I2C device: %s", esp_err_to_name(add_ret));
+            return add_ret;
+        }
     }
 
     s_current_addr = target_addr;
@@ -247,7 +268,8 @@ esp_err_t ssd1306_init(uint8_t i2c_addr)
         0xAF              // Display ON
     };
 
-    ret = i2c_master_transmit(s_dev_handle, init_cmds, sizeof(init_cmds), pdMS_TO_TICKS(100));
+    esp_err_t ret = i2c_master_transmit(s_dev_handle, init_cmds, sizeof(init_cmds), pdMS_TO_TICKS(100));
+    i2cmux_unlock();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to send initialization commands to SSD1306: %s", esp_err_to_name(ret));
         ssd1306_check_latched_bus(ret);
@@ -255,6 +277,9 @@ esp_err_t ssd1306_init(uint8_t i2c_addr)
     }
 
     ESP_LOGI(TAG, "SSD1306 initialized at 0x%02X (128x64)", s_current_addr);
+
+    // Allow charge pump to stabilize after Display ON (0xAF)
+    vTaskDelay(pdMS_TO_TICKS(100));
 
     // Clear buffer and update display
     memset(s_buffer, 0, sizeof(s_buffer));
@@ -270,7 +295,7 @@ esp_err_t ssd1306_clear_display(void)
     }
 
     memset(s_buffer, 0, sizeof(s_buffer));
-    s_cursor_y = 0; // Reset line cursor back to top
+    s_cursor_y = 0;
     return ssd1306_update();
 }
 

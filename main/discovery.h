@@ -15,7 +15,7 @@ extern "C" {
 
 #define MESH_TEXT_LEN           18
 #define MESH_LINE_LEN           80
-#define ROUTING_TABLE_MAX_NODES 20
+#define ROUTING_TABLE_MAX_NODES 25
 
 #define DISCOVERY_CMD_HELLO        "HELLO"
 #define DISCOVERY_CMD_HELLO_ACK    "HELLO_ACK"

@@ -2,30 +2,31 @@
  * I2Cmux.c - TCA9548A 8-Channel I2C Multiplexer / Switch Driver
  *
  * Purpose:
- *   Drives Texas Instruments TCA9548A (0x70..0x77) 8-channel I2C switches
- *   over the shared I2C bus (i2c_manager). Allows dynamically choosing one
- *   of the 8 downstream I2C channels (0..7) to communicate with conflicting
- *   or multiplexed I2C target devices.
+ *   Drives Texas Instruments TCA9548A (0x70..0x77, up to I2CMUX_MAX_INSTANCES = 4) 8-channel
+ *   I2C switches over the shared I2C bus (i2c_manager). Allows dynamically choosing one of
+ *   the 8 downstream I2C channels (0..7) to communicate with multiple fixed-address I2C devices,
+ *   and provides recursive mutex locking (i2cmux_lock / i2cmux_unlock) plus atomic channel
+ *   switch/restore helpers (i2cmux_switch_and_lock / i2cmux_restore_and_unlock) so background
+ *   sensor tasks can poll muxed sensors without disturbing foreground channel selections.
  *
  * Supported Commands:
  *   SetI2Cmux <X> [addr]  (or SetI2Cmux <addr> <X>)
- *     - X: Channel index [0..7] (or 1..8 for 1-based index).
- *          Pass -1 or 255 to disable all channels.
- *     - addr: (Optional) 7-bit I2C address (0x70..0x77, default: 0x70).
- *     Selects the specified I2C channel.
+ *     - X: Channel index [0..7]. Pass < 0 or > 7 (e.g. -1 or 8) to disable all channels.
+ *     - addr: (Optional) 7-bit I2C address (0x70..0x77, default: 0x70 / 112).
+ *     Selects the specified downstream I2C channel.
  *     Replies "SET I2CMUX OK" or "SET I2CMUX FAIL".
  *
  *   GetI2Cmux [addr] / ReadI2Cmux [addr]
  *     - addr: (Optional) 7-bit I2C address.
  *     Reads the current active channel from the TCA9548A control register.
- *     Replies "I2CMUX CH <X>", "I2CMUX NONE", or "I2CMUX MASK 0x<HEX>".
+ *     Replies "I2CMUX CH <X>", "I2CMUX NONE", "I2CMUX MASK 0x<HEX>", or "I2CMUX RD FAIL".
  *
  *   SetupI2Cmux [addr]
- *     - addr: (Optional) 7-bit I2C address (default: 0x70, or auto-probe).
- *     Initializes I2C bus and verifies TCA9548A presence.
+ *     - addr: (Optional) 7-bit I2C address (default: 0x70 / 112, or auto-probe 0x70..0x77).
+ *     Initializes I2C bus, verifies TCA9548A presence, and resets all channels OFF (0x00).
  *     Replies "SETUP I2CMUX OK" or "SETUP I2CMUX FAIL".
  *
- *   SetI2CmuxMask <mask> [addr]
+ *   SetI2CmuxMask <mask> [addr]  (or SetI2CmuxMask <addr> <mask>)
  *     - mask: Raw 8-bit channel mask (0x00..0xFF).
  *     Replies "SET I2CMUX OK" or "SET I2CMUX FAIL".
  */
@@ -37,6 +38,7 @@
 #include "driver/i2c_master.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include "i2c_manager.h"
 #include "mesh_zigbee.h"
@@ -48,6 +50,24 @@ static uint8_t s_current_addr = 0;
 static i2c_master_dev_handle_t s_mux_dev_handle = NULL;
 static uint8_t s_current_mask = 0;
 static bool s_initialized = false;
+static SemaphoreHandle_t s_mux_mutex = NULL;
+
+void i2cmux_lock(void)
+{
+    if (s_mux_mutex == NULL) {
+        s_mux_mutex = xSemaphoreCreateRecursiveMutex();
+    }
+    if (s_mux_mutex != NULL) {
+        xSemaphoreTakeRecursive(s_mux_mutex, portMAX_DELAY);
+    }
+}
+
+void i2cmux_unlock(void)
+{
+    if (s_mux_mutex != NULL) {
+        xSemaphoreGiveRecursive(s_mux_mutex);
+    }
+}
 
 bool i2cmux_check_latched_bus(esp_err_t err)
 {
@@ -116,8 +136,10 @@ static esp_err_t ensure_mux_handle(uint8_t target_addr)
 
 esp_err_t i2cmux_init(uint8_t i2c_addr)
 {
+    i2cmux_lock();
     esp_err_t ret = ensure_mux_handle(i2c_addr);
     if (ret != ESP_OK) {
+        i2cmux_unlock();
         return ret;
     }
 
@@ -141,13 +163,16 @@ esp_err_t i2cmux_init(uint8_t i2c_addr)
                  s_current_addr, esp_err_to_name(ret));
         i2cmux_check_latched_bus(ret);
     }
+    i2cmux_unlock();
     return ret;
 }
 
 esp_err_t i2cmux_set_mask_addr(uint8_t i2c_addr, uint8_t mask)
 {
+    i2cmux_lock();
     esp_err_t ret = ensure_mux_handle(i2c_addr);
     if (ret != ESP_OK) {
+        i2cmux_unlock();
         return ret;
     }
 
@@ -162,6 +187,7 @@ esp_err_t i2cmux_set_mask_addr(uint8_t i2c_addr, uint8_t mask)
                  s_current_addr, mask, esp_err_to_name(ret));
         i2cmux_check_latched_bus(ret);
     }
+    i2cmux_unlock();
     return ret;
 }
 
@@ -195,8 +221,10 @@ esp_err_t i2cmux_get_mask_addr(uint8_t i2c_addr, uint8_t *mask)
 {
     if (!mask) return ESP_ERR_INVALID_ARG;
 
+    i2cmux_lock();
     esp_err_t ret = ensure_mux_handle(i2c_addr);
     if (ret != ESP_OK) {
+        i2cmux_unlock();
         return ret;
     }
 
@@ -210,6 +238,7 @@ esp_err_t i2cmux_get_mask_addr(uint8_t i2c_addr, uint8_t *mask)
         ESP_LOGE(TAG, "TCA9548A (0x%02X) receive fail: %s", s_current_addr, esp_err_to_name(ret));
         i2cmux_check_latched_bus(ret);
     }
+    i2cmux_unlock();
     return ret;
 }
 
@@ -230,6 +259,45 @@ int8_t i2cmux_get_selected_channel(void)
     }
 
     return (bit_count == 1) ? active_ch : -1;
+}
+
+esp_err_t i2cmux_switch_and_lock(int8_t channel, uint8_t *saved_mask_out, bool *mux_switched_out)
+{
+    i2cmux_lock();
+    if (saved_mask_out) *saved_mask_out = s_current_mask;
+    if (mux_switched_out) *mux_switched_out = false;
+
+    if (channel >= 0 && channel < TCA9548A_NUM_CHANNELS) {
+        uint8_t target_mask = (uint8_t)(1 << channel);
+        if (!s_initialized || s_current_mask != target_mask) {
+            esp_err_t ret = i2cmux_set_mask_addr(0, target_mask);
+            if (ret != ESP_OK) {
+                i2cmux_unlock();
+                return ret;
+            }
+            if (mux_switched_out) *mux_switched_out = true;
+        }
+        return ESP_OK;
+    }
+
+    // channel < 0 (main bus device): if mux is initialized and has a channel open, isolate downstream channels
+    if (s_initialized && s_current_mask != 0x00) {
+        esp_err_t ret = i2cmux_set_mask_addr(0, 0x00);
+        if (ret != ESP_OK) {
+            i2cmux_unlock();
+            return ret;
+        }
+        if (mux_switched_out) *mux_switched_out = true;
+    }
+    return ESP_OK;
+}
+
+void i2cmux_restore_and_unlock(uint8_t saved_mask, bool mux_switched)
+{
+    if (mux_switched && s_initialized && s_current_mask != saved_mask) {
+        i2cmux_set_mask_addr(0, saved_mask);
+    }
+    i2cmux_unlock();
 }
 
 bool i2cmux_is_cmd(const char *cmd)

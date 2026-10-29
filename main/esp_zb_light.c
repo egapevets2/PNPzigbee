@@ -2,37 +2,43 @@
  * esp_zb_light.c - Main Application Lifecycle & Mesh Command Dispatcher
  *
  * Purpose:
- *   System entry point (app_main) and runtime orchestrator for both Coordinator and
- *   End Device nodes.
- *   - Reads persistent identity and role (ROLE_COORDINATOR, ROLE_END_DEVICE, ROLE_UNPROVISIONED) from NVS.
- *   - Initializes radio hardware, serial consoles, and peripheral drivers based on role.
+ *   System entry point (app_main) and runtime orchestrator for Coordinator, End Device,
+ *   and Unprovisioned nodes.
+ *   - Reads persistent identity and role (ROLE_COORDINATOR, ROLE_END_DEVICE, ROLE_UNPROVISIONED) from NVS,
+ *     demoting End Devices with missing/placeholder names to ROLE_UNPROVISIONED at boot.
+ *   - Initializes radio hardware, serial consoles, and peripheral drivers based on role (leaving
+ *     I2C pins GPIO 22/23 untouched at boot until an I2C setup command is issued).
  *   - In End Device mode: runs app_msg_task to receive mesh commands from the coordinator,
- *     parses incoming text lines, acknowledges valid messages (ACK), handles local core commands,
- *     and dispatches subsystem commands to appropriate modules.
- *   - Manages physical user button interrupts and interactive serial console.
+ *     parses up to 3 numeric parameters (clamped to 16-bit signed integers) plus string payload,
+ *     acknowledges valid commands ([ACK] unless suppressed by dedicated telemetry replies),
+ *     handles local core commands, and dispatches subsystem commands to appropriate modules.
+ *   - Manages physical user button (GPIO 9) task and interactive USB serial console.
  *
  * Supported Commands (Directly Handled by Core Dispatcher):
+ *   PING
+ *     Replies "PONG LQI=<lqi>" with the instantaneous inbound Link Quality Indicator.
+ *
  *   blink <count> [delay_ms]
  *     - count: Number of blinks (0..20).
  *     - delay_ms: Blink half-cycle time in ms (default 200).
- *     Flashes onboard user LED (GPIO 15) count times.
+ *     Flashes onboard user LED (GPIO 15) count times. Replies "OK".
  *
- *   on
- *     Turns the onboard user LED ON.
- *
- *   off
- *     Turns the onboard user LED OFF.
+ *   on / off
+ *     Turns the onboard user LED ON ("GOT ON OK") or OFF ("GOT OFF OK").
  *
  *   SetupSerialBridge
  *     Initializes transparent UART bridge (UART1, TX=GPIO17, RX=GPIO16 @ 115200 baud).
  *     Replies "SETUP SERIAL OK".
  *
  *   reboot / restart
- *     Restarts device after a 150ms delay.
+ *     Sends "REBOOTING" and restarts device after a 150ms flush delay.
+ *
+ *   rf <pwr> <sel> / bcast <text> / sniff <0|1> / scan
+ *     Interactive USB serial console RF diagnostic commands.
  *
  *   (All other commands are dispatched to their respective subsystem modules:
  *    pwm_driver, motor_driver, gpio_handler, neopixel, adc, stepper, proximity,
- *    vl53l1x, I2Craw, expand8, ssd1306, compass, unipolarStep).
+ *    vl53l1x, I2Craw, expand8, ssd1306, compass, rotary, i2cmux, unipolarStep).
  */
 
 #include <stdio.h>
@@ -398,6 +404,8 @@ static void app_msg_task(void *arg)
                     strcasecmp(msg.cmd, "rdExpand8") != 0 && strcasecmp(msg.cmd, "rdExpand8byte") != 0 &&
                     strcasecmp(msg.cmd, "SetupExpand8") != 0 &&
                     strcasecmp(msg.cmd, "ClearDisp") != 0 && strcasecmp(msg.cmd, "print") != 0 &&
+                    strcasecmp(msg.cmd, "PrintLines") != 0 && strcasecmp(msg.cmd, "Print2") != 0 &&
+                    strcasecmp(msg.cmd, "Print3") != 0 && strcasecmp(msg.cmd, "PrintAt") != 0 &&
                     strcasecmp(msg.cmd, "SetupDisp") != 0 && strcasecmp(msg.cmd, "SetupSSD1306") != 0 &&
                     strcasecmp(msg.cmd, "scanI2C") != 0 && strcasecmp(msg.cmd, "I2Cscan") != 0 &&
                     strcasecmp(msg.cmd, "SetupCompass") != 0 && strcasecmp(msg.cmd, "GetCompass") != 0 &&
@@ -411,7 +419,12 @@ static void app_msg_task(void *arg)
                     strcasecmp(msg.cmd, "GetI2Cmux") != 0 &&
                     strcasecmp(msg.cmd, "ReadI2Cmux") != 0 &&
                     strcasecmp(msg.cmd, "SetupI2Cmux") != 0 &&
-                    strcasecmp(msg.cmd, "SetI2CmuxMask") != 0) {
+                    strcasecmp(msg.cmd, "SetI2CmuxMask") != 0 &&
+                    strcasecmp(msg.cmd, "SetupProximity") != 0 &&
+                    strcasecmp(msg.cmd, "ReadProximity") != 0 &&
+                    strcasecmp(msg.cmd, "ReadProx") != 0 &&
+                    strcasecmp(msg.cmd, "StreamProx") != 0 &&
+                    strcasecmp(msg.cmd, "SetupVL53L1X") != 0) {
                     if (strcmp(msg.text, "ACK") != 0 && msg.source[0] != '\0') {
                         mesh_zigbee_send_text("ACK");
                     }

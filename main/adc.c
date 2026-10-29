@@ -3,47 +3,54 @@
  *
  * Purpose:
  *   Manages ESP32-C6 ADC1 channels (A0/GPIO0, A1/GPIO1, A2/GPIO2) using the oneshot
- *   ADC driver. Supports two primary operational modes:
- *     1. Window Comparator Mode: Monitored with LowerThresh/UpperThresh hysteresis,
- *        reporting state changes ("ADC <chan> EXCEEDED UPPER", "ADC <chan> DROPPED BELOW LOWER").
- *     2. Potentiometer Detent Mode: Divides analog range into discrete percentage-based
- *        notches/detents (e.g. 10%) with hysteresis to prevent oscillation, reporting
- *        detent transitions ("ADC <chan> DETENT <N>"). Active range is calibrated across
+ *   ADC driver with SAR mux settling and 4x oversampling. Supports two operational modes:
+ *     1. Window Comparator Mode (ADC_MODE_COMPARATOR): Monitored with LowerThresh/UpperThresh
+ *        hysteresis (defaults: 1000 / 2000), reporting state changes upstream via
+ *        "ADCcomparator<A0|A1|A2> <1|0>".
+ *     2. Potentiometer Detent Mode (ADC_MODE_POT): Divides the active analog span into discrete
+ *        percentage-based notches/detents (default 10%) with step hysteresis, reporting detent
+ *        transitions upstream via "ADCpot<A0|A1|A2> <N>". Active range is calibrated across
  *        [50mV, 3.3V] for DC motor throttle control (ensuring positive 0% stop at full CCW
  *        and guaranteed 100% full throttle at full CW).
- *   Also supports one-shot reads and continuous serial streaming.
+ *   Also supports one-shot settled reads and continuous serial streaming.
  *
  * Supported Commands:
  *   SetupADC [channel]
  *     - channel: 0 (A0), 1 (A1), or 2 (A2). Defaults to 1 (A1).
  *     Initializes the specified ADC channel in comparator mode with default thresholds.
- *     Aliases: SetupADCA0, SetupADCA1, SetupADCA2.
+ *     Aliases: SetupADCA0, SetupADCA1, SetupADCA2, SetupADC0, SetupADC1, SetupADC2.
+ *     Replies "SETUP ADC<A0|A1|A2> OK".
  *
  *   SetupADCpot [channel]
- *     - channel: 0 (A0), 1 (A1), or 2 (A2).
+ *     - channel: 0 (A0), 1 (A1), or 2 (A2). Defaults to 1 (A1).
  *     Initializes or switches the specified channel into potentiometer detent mode.
- *     Aliases: ADCpot, SetupADCpotA0, SetupADCpotA1, SetupADCpotA2, ADCpotA0, ADCpotA1, ADCpotA2.
+ *     Aliases: ADCpot, SetupADCpotA0..A2, SetupADCpot0..2, ADCpotA0..A2, ADCpot0..2.
+ *     Replies "SETUP ADCPOT<A0|A1|A2> OK" and sends initial "ADCpot<A0|A1|A2> <detent>".
  *
- *   PotDetent [pct]
+ *   PotDetent <pct>
  *     - pct: Percentage per detent step (1 to 100, default 10).
- *     Configures potentiometer detent step size across active channels.
- *     Aliases: PotDetentA0, PotDetentA1, PotDetentA2 (for specific channel).
+ *     Configures potentiometer detent step size across active channels (or a specific channel).
+ *     Aliases: PotDetentA0..A2, PotDetent0..2.
+ *     Replies "GOT POTDETENT <pct> OK".
  *
  *   ReadADC [channel]
  *     - channel: 0 (A0), 1 (A1), or 2 (A2). Defaults to 1 (A1).
- *     Performs a settled multi-sample reading and replies "ADCval<name> <raw>" (0..4095).
- *     Aliases: ReadADCA0, ReadADCA1, ReadADCA2.
+ *     Performs a settled multi-sample reading and replies "ADCval<A0|A1|A2> <raw>" (0..4095).
+ *     Aliases: ReadADCA0, ReadADCA1, ReadADCA2, ReadADC0, ReadADC1, ReadADC2.
  *
- *   ADCupperThreshA0 <val> / ADCupperThreshA1 <val> / ADCupperThreshA2 <val>
- *     - val: Raw ADC count threshold (0..4095).
+ *   ADCupperThresh<A0|A1|A2> <val> (or ADCupperThresh [val])
+ *     - val: Raw ADC count threshold (0..4095, default 2000).
  *     Sets upper comparator threshold and engages comparator mode.
+ *     Replies "GOT ADCUPPERTHRESH<A0|A1|A2> OK".
  *
- *   ADCLowerThreshA0 <val> / ADCLowerThreshA1 <val> / ADCLowerThreshA2 <val>
- *     - val: Raw ADC count threshold (0..4095).
+ *   ADCLowerThresh<A0|A1|A2> <val> (or ADCLowerThresh [val])
+ *     - val: Raw ADC count threshold (0..4095, default 1000).
  *     Sets lower comparator threshold and engages comparator mode.
+ *     Replies "GOT ADCLOWERTHRESH<A0|A1|A2> OK".
  *
  *   StreamADC <0|1>
  *     - 1 to enable, 0 to disable continuous streaming of raw ADC values to local serial port.
+ *     Replies "ADC STREAM ON" or "ADC STREAM OFF".
  */
 
 #include <stdio.h>

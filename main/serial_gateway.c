@@ -3,10 +3,12 @@
  *
  * Purpose:
  *   Operates as the central USB serial gateway on the Coordinator node, interfacing between
- *   the PC host (e.g. test runner, command terminal) and the remote mesh network.
+ *   the PC host (e.g. test runner, command terminal) and the remote star network.
  *   - Routes commands from PC host to specific named end devices (e.g. "Kitchen blink 3").
- *   - Receives upstream replies and notifications from end devices and streams them to host.
- *   - Coordinates network topology queries, discovery sweeps, and link-quality reports.
+ *   - Receives upstream replies and notifications from end devices, automatically dispatches
+ *     unicast ACK frames back to the sender when appropriate, and prints formatted RX frames to host.
+ *   - Coordinates network topology queries, discovery sweeps, link-quality reports, and
+ *     NVS Workbench configuration commands.
  *
  * Supported Commands (Coordinator Host Interface):
  *   <TargetDevice> <cmd> [args...]
@@ -14,7 +16,7 @@
  *
  *   GiveNetworkReport
  *     Initiates an active network survey: unicasts PING frames to all registered nodes in the
- *     routing table, computes real-time RSSI/LQI round-trips, and outputs a formatted topology summary.
+ *     routing table, waits up to 3s for live PONG responses, and outputs a CSV topology report.
  *
  *   PingNetwork
  *     Unicasts PING to all active nodes in the routing table to verify bidirectional connectivity.
@@ -25,14 +27,11 @@
  *   ResetCoordinator
  *     Reboots the coordinator hardware.
  *
- *   scan
- *     Triggers a local 2.4GHz Wi-Fi environment scan and prints all detected access points.
- *
- *   rf <pwr> <sel>
- *     Directly sets the coordinator hardware RF switch pins (GPIO 3 PWR, GPIO 14 SEL).
+ *   scan / rf <pwr> <sel> / ShowConfig / SetRole / SetName / SetChannel / SetTxPower / SetLR / FactoryReset
+ *     Local RF diagnostics and NVS Workbench configuration commands.
  *
  *   help / ?
- *     Prints available coordinator host commands.
+ *     Prints available coordinator host and NVS workbench commands.
  */
 
 #include "serial_gateway.h"
@@ -68,8 +67,8 @@ typedef routing_entry_t DeviceEntry;
 #define find_device_by_name(name) routing_table_find_by_name(name)
 #define find_device_by_mac(mac)   routing_table_find_by_mac(mac)
 
-#define COORD_RX_QUEUE_LEN 16
-#define COORD_TX_QUEUE_LEN 16
+#define COORD_RX_QUEUE_LEN 32
+#define COORD_TX_QUEUE_LEN 32
 
 static QueueHandle_t s_coord_rx_queue = NULL;
 static QueueHandle_t s_coord_tx_queue = NULL;
@@ -393,7 +392,7 @@ static void coord_espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uin
         ESP_LOGI(TAG, "ESP-NOW RX text: src='%s' text='%s'", rx.source, rx.text);
     }
 
-    rx.value = lqi;
+    rx.lqi = lqi;
 
     if (strncmp(rx.text, "PONG", 4) == 0 && dev) {
         int remote_lqi = -1;
@@ -626,7 +625,7 @@ static void coord_app_msg_task(void *arg)
                     }
                     mesh_serial_writef("< %s: [PONG LQI=%d REMOTE_LQI=%d]\r\n",
                                        msg.source,
-                                       msg.value,
+                                       msg.lqi,
                                        remote_lqi);
                     if (s_fresh_report_active) {
                         s_fresh_report_received++;

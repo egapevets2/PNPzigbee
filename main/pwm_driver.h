@@ -20,6 +20,11 @@ extern "C" {
 void pwm_driver_init(int channel);
 
 /**
+* @brief Deinitialize all active PWM channels and free their LEDC channels/timers.
+*/
+void pwm_driver_deinit_all(void);
+
+/**
 * @brief Set the GPIO pin for a specific PWM hardware output.
 *
 * @param channel The PWM channel (1-4)

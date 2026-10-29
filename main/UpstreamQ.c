@@ -2,10 +2,12 @@
  * UpstreamQ.c - Asynchronous Upstream Message Throttler & Queue
  *
  * Purpose:
- *   Provides a decoupled, thread-safe FreeRTOS message buffering and throttling service
- *   (s_msg_queue) for End Device sensor and status tasks. Allows sensor comparator tasks
- *   to post events non-blockingly via SendTheMessage() without stalling on wireless transmission,
- *   exerting automatic backpressure if the mesh TX queue is momentarily congested.
+ *   Provides a decoupled, thread-safe FreeRTOS message buffering and forwarding service
+ *   (s_msg_queue: 10 slots x 64 bytes) for End Device sensor and status tasks. Allows sensor
+ *   comparator and polling tasks to post events non-blockingly via SendTheMessage() without
+ *   stalling on wireless transmission; throttle_task forwards queued messages immediately to
+ *   mesh_zigbee_send_custom_msg() with a 10ms retry backoff (up to 50 retries) if the radio
+ *   TX queue is momentarily full.
  *
  * Supported Commands:
  *   None (Internal Subsystem/Driver)

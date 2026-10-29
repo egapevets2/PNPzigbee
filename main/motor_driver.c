@@ -2,27 +2,31 @@
  * motor_driver.c - Dual-Mode DC Motor Driver Subsystem
  *
  * Purpose:
- *   Controls DC motors via LEDC PWM hardware, supporting two driver topologies:
+ *   Controls DC motors via 10-bit LEDC PWM hardware, supporting two driver topologies:
  *     - Mode 0: DRV8833 dual-PWM H-bridge (IN1=GPIO 18, IN2=GPIO 20).
  *     - Mode 1: Cytron MD10C / 10C single-PWM and Direction (PWM=GPIO 18, DIR=GPIO 20).
- *   Features smooth software acceleration/deceleration slew-rate limiting and an automatic
+ *   Features 50 Hz (20ms) software acceleration/deceleration slew-rate limiting (motor_slew_task)
+ *   that sends "Motor At <speed>" upstream when a slewed ramp finishes, plus an automatic
  *   RF loss failsafe throttle (RFlossThrottle). When connection to the coordinator is lost,
- *   RFlossThrottle slews down from 1.0 to 0.0 over exactly 1 second, gently ramping motor output
- *   down to 0. When connection recovers, RFlossThrottle slews back up to 1.0 over 1 second.
+ *   RFlossThrottle slews down from 1.0 to 0.0 over 1.0 second, gently ramping motor output
+ *   down to 0. When connection recovers, RFlossThrottle slews back up to 1.0 over 1.0 second.
  *
  * Supported Commands:
  *   SetupMotorDriver <mode> <freq>
  *     - mode: 0 for DRV8833 (dual PWM), 1 for Cytron 10C (PWM + Direction).
- *     - freq: PWM switching frequency in Hz (e.g. 5000).
+ *     - freq: PWM switching frequency in Hz (e.g. 5000, default 5000).
  *     Initializes LEDC timer, channels, and GPIOs for motor operation.
+ *     Replies "SETUP MOTOR OK".
  *
  *   MotorSpeed <speed>
  *     - speed: Commanded speed from -1000 (full reverse) to +1000 (full forward), 0 to stop.
  *     Sets target motor drive speed subject to active slew rate and RFlossThrottle.
+ *     Replies "GOT MOTORSPEED OK" (and sends "Motor At <speed>" when slew completes).
  *
  *   MotorSlew <rate>
  *     - rate: Slew rate in speed units per second (0 = instantaneous step).
  *     Configures how quickly the motor accelerates or decelerates toward target speed.
+ *     Replies "GOT MOTORSLEW OK".
  *
  *   GetRFlossThrottle
  *     Queries the instantaneous communication failsafe throttle factor (0.00 to 1.00).

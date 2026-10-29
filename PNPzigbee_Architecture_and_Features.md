@@ -9,10 +9,10 @@
 ## 1. Executive Summary
 
 The **PNPzigbee** firmware turns an ESP32-C6 system-on-chip into a versatile, high-reliability actuator and sensor controller. Communicating via a high-performance **Star Network (Hub-and-Spoke Topology)** over 2.4 GHz **ESP-NOW Long Range (LR)** action frames and a local USB/UART console, it bridges central Coordinator Hub commands to a wide array of physical hardware interfaces:
-- **Motion & Motors:** DC motors (DRV8833 & Cytron 10C with RF-loss gentle stop fail-safe), 4-phase Bipolar/PWM Steppers (Full/Half/Microstep with current-limiting PWM), 5-wire Unipolar Steppers (`unipolarStep` for Adafruit 28BYJ-48 with Arduino `Stepper` core, half-step mode, and linear acceleration/deceleration ramping), and 4 independent hardware PWM channels with linear slew-rate ramping (supporting hobby servos and multi-channel RGB LED PWM fading).
-- **Sensors & I/O Expanders:** Time-of-Flight distance (VL53L1X), optical proximity/ambient light (APDS-9930), 3-axis digital compass/magnetometer (QMC5883L), 8-bit quasi-bidirectional I2C port expander (PCF8574 `Expand8`), 12-bit ADC channels with software Schmitt-trigger hysteresis comparators, dynamic GPIO monitoring, and on-demand I2C bus scanning (`scanI2C`).
-- **Visuals & Bridging:** Multi-pixel WS2812B addressable RGB LEDs (`NeoPixel` with configurable strand length, frame buffer, and atomic single-color/clear commands), 128x64 monochrome I2C OLED display (`SSD1306` with multi-size Adafruit GFX `FreeMono` fonts), onboard indicator LED, and a full-duplex hardware UART serial bridge.
-- **Resilience:** Single-hop deterministic latency (~20–30 ms), FreeRTOS queue backpressure management, hardware timer arbitration (LEDC arbiter), on-demand zero-pin-leakage I2C bus management (`i2c_manager`), upstream message rate-limiting (`UpstreamQ`), tri-layer dynamic spoke discovery, and over-the-air reboot dispatch.
+- **Motion & Motors:** DC motors (DRV8833 & Cytron 10C with RF-loss gentle stop fail-safe), 4-phase Bipolar/PWM Steppers (Full/Half-step with current-limiting ultrasonic PWM), 5-wire Unipolar Steppers (`unipolarStep` for Adafruit 28BYJ-48 with Arduino `Stepper` core, half-step mode, and linear acceleration/deceleration ramping), and 4 independent hardware PWM channels with linear slew-rate ramping (supporting hobby servos and multi-channel RGB LED PWM fading).
+- **Sensors, Multiplexers & I/O Expanders:** Time-of-Flight distance (VL53L1X), optical proximity/ambient light (APDS-9930), 3-axis digital compass/magnetometer with 12-threshold signed hysteresis (QMC5883L), 8-channel I2C bus multiplexer (TCA9548A `I2Cmux` with `_mxN` multi-sensor round-robin polling), multi-instance 8-bit quasi-bidirectional I2C port expanders (PCF8574/PCF8574A `Expand8` with 250 ms autonomous pin-change polling `NewByte_<addr> <X>`), Keyes KY-040 quadrature rotary encoder with debounced pushbutton (`Rotary`), 12-bit ADC channels with software Schmitt-trigger hysteresis comparators and mechanical potentiometer detent emulation (`ADCpot`), dynamic GPIO monitoring with 4 Hz RF-drop disconnect flasher (`RFdropBlink`), and on-demand I2C bus scanning (`scanI2C`).
+- **Visuals & Bridging:** Multi-pixel WS2812B addressable RGB LEDs (`NeoPixel` driven via zero-CPU-overhead SPI2+GDMA with configurable strand length, frame buffer, and atomic single-color/clear commands), 128x64 monochrome I2C OLED display (`SSD1306` with multi-size Adafruit GFX `FreeMono` fonts and atomic multi-line rendering), onboard indicator LED, and a full-duplex hardware UART serial bridge.
+- **Resilience & Safety:** Single-hop deterministic low latency, FreeRTOS queue backpressure management (`UpstreamQ` with 10-deep x 64-byte buffer and 10 ms TX-full retry backoff), hardware timer arbitration (LEDC arbiter), on-demand zero-pin-leakage I2C bus management (`i2c_manager`), automatic I2C latched-bus detection and in-place 9-clock hardware recovery across all I2C peripherals, 3-missing-heartbeat RF link loss tolerance (~6.0 s silence / 4 consecutive TX fails), NVS unique node name and TX power validation, graceful non-fatal radio error fallback to the workbench console, 16-bit integer command token saturation, tri-layer dynamic spoke discovery, and over-the-air reboot dispatch.
 
 ---
 
@@ -33,7 +33,7 @@ flowchart TD
         MS --> |User Input| ZB_STACK
         SB <--> |Bi-directional Tunnel| ZB_STACK
         APP_MSG --> PARSER["parse_text_for_local_action"]
-        UQ["UpstreamQ (200ms Rate Limiter)"] --> |Unicast / Ack Frame| ZB_STACK
+        UQ["UpstreamQ (Backpressure Queue)"] --> |Unicast / Ack Frame| ZB_STACK
     end
 
     subgraph Resource_Managers ["Hardware Resource Arbiters"]
@@ -45,21 +45,23 @@ flowchart TD
     subgraph Actuator_Subsystems ["Motion & Output Subsystems"]
         PARSER --> PWM["pwm_driver (4 Ch + Linear Slew / RGB Fade)"]
         PARSER --> MOTOR["motor_driver (DRV8833 / Cytron)"]
-        PARSER --> STEPPER["Stepper (Full/Half/Micro + Hold)"]
+        PARSER --> STEPPER["Stepper (Full/Half + Ultrasonic PWM)"]
         PARSER --> UNIPOLAR["unipolarStep (28BYJ-48 4-Phase + Accel/Decel)"]
-        PARSER --> NEO["NeoPixel (WS2812B RMT + Atomic RGB)"]
-        PARSER --> GPIO_OUT["GPIO_handler (Digital Out)"]
+        PARSER --> NEO["NeoPixel (WS2812B SPI2 DMA + Atomic RGB)"]
+        PARSER --> GPIO_OUT["GPIO_handler (Digital Out + RFdropBlink)"]
         PARSER --> LED["light_driver (Status LED)"]
-        PARSER --> EXP8["Expand8 (PCF8574 8-Bit I/O Expander)"]
+        PARSER --> EXP8["Expand8 (Multi-Instance PCF8574 8-Bit I/O Expander)"]
         PARSER --> SSD1306["SSD1306 (128x64 OLED Display)"]
+        PARSER --> I2CMUX["I2Cmux (TCA9548A 8-Ch I2C Switch)"]
     end
 
     subgraph Sensor_Subsystems ["Sensor & Telemetry Subsystems"]
         PARSER --> VL53["VL53L1X ToF Distance"]
         PARSER --> APDS["APDS-9930 Proximity"]
         PARSER --> COMPASS["QMC5883L 3-Axis Magnetometer"]
-        PARSER --> ADC_DRV["ADC (A0, A1, A2 + Hysteresis)"]
+        PARSER --> ADC_DRV["ADC (A0, A1, A2 + Hysteresis / ADCpot)"]
         PARSER --> GPIO_IN["GPIO_handler (Input Change Detect)"]
+        PARSER --> ROTARY["Rotary (KY-040 Quadrature + Pushbutton)"]
         PARSER --> I2C_RAW["I2Craw (Direct Register Access & scanI2C)"]
     end
 
@@ -69,6 +71,7 @@ flowchart TD
 
     EXP8 --> I2C_MGR
     SSD1306 --> I2C_MGR
+    I2CMUX --> I2C_MGR
     COMPASS --> I2C_MGR
     VL53 --> I2C_MGR
     APDS --> I2C_MGR
@@ -79,8 +82,11 @@ flowchart TD
     VL53 -.-> |Threshold / Stream| UQ
     APDS -.-> |Threshold / Stream| UQ
     COMPASS -.-> |Field Telemetry| UQ
-    ADC_DRV -.-> |State Change Event| UQ
+    EXP8 -.-> |NewByte_<addr> Event| UQ
+    ADC_DRV -.-> |State / Detent Event| UQ
     GPIO_IN -.-> |Pin Change Event| UQ
+    ROTARY -.-> |CW / CCW / Button Event| UQ
+    I2C_MGR -.-> |I2C BUS LATCHED Alert| UQ
 ```
 
 ### 2.2 Network Topology: Star (Hub-and-Spoke) vs. Multi-Hop Mesh Rationale
@@ -113,7 +119,7 @@ flowchart TD
 
 | Feature / Metric | Star Topology (PNPzigbee Implementation) | Multi-Hop Mesh Topology |
 | :--- | :--- | :--- |
-| **Round-Trip Latency (RTT)** | **Deterministic & Fast (~20–30 ms)**; single hop in each direction | Variable & Slower (100–300+ ms); scales with hop count and relay queue delays |
+| **Round-Trip Latency (RTT)** | **Deterministic & Fast (Single-Hop)**; direct hub-to-spoke & spoke-to-hub frames | Variable & Slower (100–300+ ms); scales with hop count and relay queue delays |
 | **Firmware & Protocol Complexity** | **Compact, robust, and FreeRTOS task-safe**; non-recursive state machines | Heavy, complex routing engines (AODV, RPL, Dijkstra path calculators) |
 | **Network Protocol Chatter** | **Zero background routing overhead**; airwaves reserved for actual commands | Continuous route discovery (RREQ/RREP), route maintenance, and link-status beacons |
 | **Failure Domain** | **Strictly isolated**: If one spoke fails or reboots, no other node is affected | **Cascading failures**: If an intermediate routing node drops, its entire downstream subtree loses connectivity |
@@ -124,7 +130,7 @@ flowchart TD
 #### Engineering Rationale for Choosing Star Topology
 
 1. **Deterministic Low Latency & Minimal Jitter:**
-   Actuator and motor control (e.g., stopping a DC motor, positioning a stepper, or reading emergency proximity thresholds) requires guaranteed, deterministic execution windows. Single-hop ESP-NOW transactions reliably complete in **20 to 30 ms**, whereas multi-hop mesh routing introduces non-deterministic queuing, route-discovery pauses, and re-convergence delays.
+   Actuator and motor control (e.g., stopping a DC motor, positioning a stepper, or reading emergency proximity thresholds) requires guaranteed, deterministic execution windows. Single-hop ESP-NOW transactions complete directly in a single hop without intermediate relay hops, whereas multi-hop mesh routing introduces non-deterministic queuing, route-discovery pauses, and re-convergence delays.
 
 2. **Elimination of Mesh Protocol Overhead & Contention:**
    True multi-hop mesh protocols require continuous background radio broadcasts for neighbor table maintenance, link cost metrics, and route discovery. In a 2.4 GHz spectrum already shared with Wi-Fi and Bluetooth, this background chatter consumes airtime and increases packet collision probability. A star network eliminates 100% of background routing chatter.
@@ -149,8 +155,8 @@ flowchart TD
 Communication in the Star Network ([`discovery.c`](file:///c:/Users/egape/PNPzigbee/main/discovery.c)) operates across three distinct operational layers using packed `espnow_frame_t` frames:
 
 1. **Layer 1: Spoke Announcement on Boot (`HELLO` / `HELLO_ACK`)**
-   When an End Device spoke powers on or reboots, `disc_node_task` broadcasts a `HELLO` frame containing its NVS-configured node name and source MAC address using an exponential backoff sequence (`500 ms, 1000 ms, 2000 ms, 5000 ms, 10000 ms`), followed by a 30-second steady-state background heartbeat.
-   Upon reception, the Coordinator Hub automatically assigns a 16-bit short address (`0x0001`, `0x0002`, ...), computes the 64-bit EUI-64 IEEE address, inserts the entry into its active routing table, and transmits a unicast `HELLO_ACK` back to the spoke. The spoke then persists the Coordinator's MAC address in NVS (`coord_mac`).
+   When an End Device spoke powers on or reboots, `disc_node_task` broadcasts a `HELLO` frame containing its NVS-configured node name and source MAC address using an exponential backoff sequence (`500 ms, 1000 ms, 2000 ms, 5000 ms, 10000 ms`), followed by a steady-state background heartbeat loop polling every `500 ms` and dispatching a unicast `HELLO` probe whenever $\ge 1000\text{ ms}$ (~1.0–1.5 s) have elapsed since the last Coordinator contact.
+   Upon reception, the Coordinator Hub automatically assigns a 16-bit short address (`0x0001`, `0x0002`, ...), computes the 64-bit EUI-64 IEEE address, inserts the entry into its active routing table (supporting up to **`ROUTING_TABLE_MAX_NODES = 25` End Devices**, backed by 32-deep Coordinator RX/TX queues and transparent LRU peer cache eviction in [`ensure_peer_exists()`](file:///c:/Users/egape/PNPzigbee/main/discovery.c#L65-L137) to overcome ESP-IDF's 20-peer `ESP_NOW_MAX_TOTAL_PEER_NUM` driver slot limit), and transmits a unicast `HELLO_ACK` back to the spoke. The spoke then persists the Coordinator's MAC address in NVS (`coord_mac`).
 
 2. **Layer 2: Hub Periodic & Boot Discovery Sweep (`DISCOVER_ALL`)**
    When the Coordinator Hub boots or executes `ResetNetwork`, it broadcasts a Layer 2 discovery request (`DISCOVER_ALL`). All listening spokes immediately lock onto the Coordinator's MAC address, persist it to NVS, and reply with a unicast `HELLO` frame, allowing the Hub to rapidly populate its routing table.
@@ -165,31 +171,38 @@ Communication in the Star Network ([`discovery.c`](file:///c:/Users/egape/PNPzig
    ```
    The spoke acknowledges receipt (`ACK`), delays 150 ms to ensure frame transmission completes, and calls `esp_restart()`. This enables complete remote testing and recovery without physical access or USB connections.
 
-5. **Single-Binary NVS Provisioning (`nvs_config`)**
-   Both the Coordinator Hub and all End Device spokes run the exact same compiled firmware binary. Personality and RF parameters are stored in the `mesh_cfg` NVS namespace and configured interactively via the USB serial workbench CLI (`SetRole Coordinator`, `SetRole EndDevice <Name>`, `SetName`, `SetChannel`, `SetTxPower`, `SetLR`, `ShowConfig`, `FactoryReset`).
+5. **Single-Binary NVS Provisioning & Boot Safety Guards (`nvs_config`)**
+   Both the Coordinator Hub and all End Device spokes run the exact same compiled firmware binary. Personality and RF parameters are stored in the `mesh_cfg` NVS namespace and configured interactively via the USB serial workbench CLI (`SetRole Coordinator`, `SetRole EndDevice <NodeName>`, `SetName`, `SetChannel`, `SetTxPower`, `SetLR`, `ShowConfig`, `FactoryReset`, `help`).
+   - **Mandatory Unique Node Name Enforcement:** Provisioning an End Device (`SetRole EndDevice <NodeName>` or `provision.py --role node --name <NodeName>`) requires an explicit, unique node name (2–17 characters, no spaces or delimiters). Reserved default placeholders (`"Node"`, `"Unassigned"`, `"default"`) are rejected by [`nvs_config_is_name_valid()`](file:///c:/Users/egape/PNPzigbee/main/nvs_config.c#L224-L239). Furthermore, a boot-time guard in [`app_main()`](file:///c:/Users/egape/PNPzigbee/main/esp_zb_light.c#L500-L509) prevents an `END_DEVICE` without a valid unique name from joining the mesh, reverting safely to the `workbench>` console.
+   - **TX Power Range Validation:** Transmitter output power (`tx_power`, stored in quarter-dBm units) is validated via [`nvs_config_is_tx_power_valid()`](file:///c:/Users/egape/PNPzigbee/main/nvs_config.c#L330-L333) across `[8, 84]` (`+2.0 dBm` to `+21.0 dBm`, default `80` = `+20.0 dBm`) when loading from NVS, in `nvs_config_set_tx_power()`, in CLI `SetTxPower`, and in `mesh_radio_init()`. Out-of-range NVS values automatically revert to `80` (`+20.0 dBm`) rather than triggering an ESP-IDF boot panic.
+   - **Graceful Non-Fatal Radio Initialization:** `app_main()` starts the USB serial console (`mesh_serial_init()`) before any radio initialization. `ROLE_UNPROVISIONED` enters the `workbench>` prompt immediately without starting Wi-Fi (initializing the radio lazily only if `scan` or `sniff` is invoked). Both [`serial_gateway_init()`](file:///c:/Users/egape/PNPzigbee/main/serial_gateway.c#L661-L681) and [`mesh_zigbee_init()`](file:///c:/Users/egape/PNPzigbee/main/mesh_zigbee.c#L359-L399) propagate radio errors non-fatally (`ESP_RETURN_ON_ERROR`) and fall back to `serial_console_task` (`workbench>`) so a node is never bricked by an RF/NVS initialization fault.
 
-### 3.2 Command Grammar & Routing
-Incoming text packets are parsed by `parse_text_for_local_action()` using a dual-mode grammar:
+### 3.2 Command Grammar, Routing & 16-Bit Integer Saturation
+Incoming text packets are parsed by [`parse_text_for_local_action()`](file:///c:/Users/egape/PNPzigbee/main/esp_zb_light.c#L112-L204) using a dual-mode grammar supporting up to three numeric parameters (`value1`, `value2`, `value3`) and an optional trailing string payload (`str_arg`):
 
 1. **Direct Mode (Unicast / Command to self):**
    ```text
-   <Command> [Value1] [Value2]
+   <Command> [Value1] [Value2] [Value3]
    Example: MotorSpeed 500
    Example: pwm1 800
    Example: NeoRed 0 128
+   Example: wrExpand8 3 1 33
    ```
 2. **Targeted Mode (Sub-device / Multi-node addressing):**
    ```text
-   <TargetNode> <Command> [Value1] [Value2]
+   <TargetNode> <Command> [Value1] [Value2] [Value3]
    Example: Kitchen blink 3
    Example: Garage UniStepFwd 512
+   Example: Kitchen SetI2Cmux 2 0x70
    ```
    If `<TargetNode>` matches the local device name, the router strips the prefix and executes the command. If the Hub receives the targeted string, it routes the command directly to the designated spoke.
+3. **16-Bit Signed Integer Clamping/Saturation:**
+   Both [`parse_int_token()`](file:///c:/Users/egape/PNPzigbee/main/esp_zb_light.c#L91-L110) on End Devices and [`parse_console_line_to_mesh_msg()`](file:///c:/Users/egape/PNPzigbee/main/serial_gateway.c#L116-L152) on the Coordinator parse numeric tokens (decimal or `0x` hex) as `long`/`int` and explicitly clamp/saturate values to `[INT16_MIN, INT16_MAX]` (`-32768` to `+32767`) with an `ESP_LOGW` warning. This prevents silent 16-bit two's-complement truncation wrap-around (for example, `MotorSpeed 33268` saturates to `+32767` $\rightarrow$ `+1000` full forward rather than wrapping to `-32268` full reverse).
 
-### 3.3 Upstream Throttling (`UpstreamQ`)
-To prevent saturation of radio transmission buffers and FreeRTOS task queues, all asynchronous event messages (sensor threshold triggers, digital state changes, telemetry streams) pass through `SendTheMessage()`.
-- **Queue Depth:** 10 messages of up to 32 bytes each.
-- **Throttling Task:** Dedicated FreeRTOS task enforcing a minimum `200ms` transmission window between outgoing upstream packets.
+### 3.3 Upstream Message Queue & Backpressure (`UpstreamQ`)
+To decouple asynchronous sensor/peripheral tasks from radio transmission without artificial rate-limiting delays, all upstream event messages (sensor threshold triggers, digital state changes, rotary steps, telemetry replies) pass through [`SendTheMessage()`](file:///c:/Users/egape/PNPzigbee/main/UpstreamQ.c#L67-L89) in [`UpstreamQ.c`](file:///c:/Users/egape/PNPzigbee/main/UpstreamQ.c):
+- **Queue Depth & Payload Size:** `MSG_BUFFER_LEN = 10` messages of up to `MSG_MAX_SIZE = 64` bytes each (`s_msg_queue`). If `s_msg_queue` is full, `SendTheMessage()` returns `false` non-blockingly so stateful comparators (`Compass`, `adc`, `VL53L1X`, `APDS-9930`) can retain their pending state and retry on the next poll cycle without dropping the final state transition.
+- **Immediate Forwarding with Backpressure (`throttle_task`):** Dedicated FreeRTOS task blocking on `xQueueReceive(s_msg_queue, msg_buf, portMAX_DELAY)` and immediately forwarding each message to `mesh_zigbee_send_text(msg_buf)` with **zero fixed delay**. If the underlying ESP-NOW TX queue (`s_mesh_tx_queue`, 16 messages deep) is momentarily full, `throttle_task` retries every `10 ms` (up to 50 attempts) to exert clean backpressure, while `mesh_tx_task` paces outgoing hardware ESP-NOW transmissions at `10 ms` intervals.
 
 ---
 
@@ -213,7 +226,8 @@ flowchart TD
     end
 
     subgraph Peripherals ["Attached I2C Device Handles"]
-        DEV_EXP["Expand8 (PCF8574)\nAddr: 0x20 (32)"]
+        DEV_MUX["I2Cmux (TCA9548A 8-Ch Switch)\nAddr: 0x70 - 0x77 (112-119)"]
+        DEV_EXP["Expand8 (Multi-Instance PCF8574/A)\nAddr: 0x20-0x27 (32-39), 0x38-0x3F (56-63)"]
         DEV_APDS["APDS-9930 Proximity\nAddr: 0x39 (57)"]
         DEV_COMPASS["QMC5883L Compass\nAddr: 0x0D (13)"]
         DEV_VL["VL53L1X Distance\nAddr: 0x29 (41)"]
@@ -223,6 +237,7 @@ flowchart TD
 
     MGR --> |Creates On-Demand| BUS
     BUS --> MUTEX
+    MUTEX --> DEV_MUX
     MUTEX --> DEV_EXP
     MUTEX --> DEV_APDS
     MUTEX --> DEV_COMPASS
@@ -235,15 +250,15 @@ flowchart TD
 A core architectural requirement of PNPzigbee is maximum hardware versatility: the firmware must gracefully support custom applications that require **zero I2C devices**.
 - **Boot-Time Pin Isolation:** At system boot, SCL (`GPIO 23`) and SDA (`GPIO 22`) remain standard unconfigured GPIOs. No I2C driver is created during boot. If an application never uses I2C, both pins remain 100% free for standard digital I/O, PWM channels, or external signaling.
 - **Elimination of Implicit / Lazy Initialization:** Earlier firmware architectures lazily initialized the I2C bus whenever any peripheral read or write command was received. This behavior was eliminated. If a user or script issues a command to an uninitialized device (e.g., `Kitchen rdExpand8 0`, `ReadProx`, or `GetCompass`), the driver gracefully rejects the command with an error message (`EXPAND8 NOT READY`, `PROX NOT READY`, `COMPASS NOT READY`, or `ERR: NO I2C ADR SET`) and **leaves the GPIO pins completely untouched**.
-- **Explicit On-Demand Allocation:** The shared bus is created *only* when an explicit peripheral setup or bus scan command is executed:
-  - `SetupExpand8 [addr]` initializes the bus and attaches the PCF8574 handle.
+- **Explicit On-Demand Allocation:** The shared bus is created *only* when an explicit peripheral setup or bus scan command is executed (and once initialized, persists for the duration of the session):
+  - `SetupI2Cmux [addr]` / `SetI2Cmux <X> [addr]` / `SetI2CmuxMask <mask> [addr]` / `GetI2Cmux [addr]` / `ReadI2Cmux [addr]` initializes the bus and attaches the TCA9548A 8-channel I2C multiplexer handle.
+  - `SetupExpand8 [addr]` initializes the bus, attaches a PCF8574/PCF8574A handle (up to 8 concurrent instances), and starts the 250 ms `expand8_poll_task`.
   - `SetupProximity` initializes the bus and attaches the APDS-9930 handle.
   - `SetupCompass [addr]` initializes the bus and attaches the QMC5883L handle.
   - `SetupVL` initializes the bus and attaches the VL53L1X handle.
-  - `SetupDisp [addr]` / `ClearDisp` / `print <size> <text>` initializes the bus and attaches the SSD1306 OLED handle.
+  - `SetupDisp [addr]` / `SetupSSD1306 [addr]` / `ClearDisp` / `print <size> <text>` / `PrintLines` / `Print2` / `Print3` / `PrintAt` initializes the bus and attaches the SSD1306 OLED handle.
   - `rawI2CchipADR <addr>` initializes the bus and attaches the dynamic raw access handle.
   - `scanI2C` / `I2Cscan` initializes the bus and probes all valid 7-bit slave addresses (`0x08`–`0x77`).
-- **Pin Reclamation (`i2c_manager_deinit_bus`):** When all I2C operations are completed, calling `i2c_manager_deinit_bus()` tears down the master bus handle and resets both GPIO 22 and 23 via `gpio_reset_pin()`, returning them to high-impedance general-purpose inputs.
 
 #### 4.2.2 ESP-IDF v6.0 Unified `i2c_master` Architecture
 The subsystem leverages the modern ESP-IDF v6.0 `driver/i2c_master.h` driver model:
@@ -270,8 +285,9 @@ The shared bus accommodates standard 7-bit peripheral addresses:
 | **VL53L1X** | Time-of-Flight Distance | `0x29` | 41 | `SetupVL` |
 | **APDS-9930** | Optical Proximity / ALS | `0x39` | 57 | `SetupProximity` |
 | **SSD1306** | 128x64 Monochrome OLED Display | `0x3C` | 60 | `SetupDisp [addr]` / `ClearDisp` / `print` |
-| **PCF8574** | 8-Bit I/O Port Expander | `0x20` – `0x27` | 32 – 39 | `SetupExpand8 [addr]` (Default: `32` / `0x20`) |
+| **PCF8574** | 8-Bit I/O Port Expander (Up to 8 Chips) | `0x20` – `0x27` | 32 – 39 | `SetupExpand8 [addr]` (Default: `32` / `0x20`) |
 | **PCF8574A** | 8-Bit I/O Expander (Variant) | `0x38` – `0x3F` | 56 – 63 | `SetupExpand8 [addr]` |
+| **TCA9548A** | 8-Channel I2C Bus Multiplexer (`I2Cmux`) | `0x70` – `0x77` | 112 – 119 | `SetupI2Cmux [addr]` / `SetI2Cmux <X> [addr]` |
 | **I2Craw** | Direct Register Debugger & Bus Scanner | Dynamic (`0x08`–`0x77`) | Dynamic | `rawI2CchipADR <addr>` / `scanI2C` |
 
 ##### Proactive Address Clash Resolution: PCF8574A vs. APDS-9930
@@ -280,10 +296,19 @@ The shared bus accommodates standard 7-bit peripheral addresses:
   1. **Probe Address Filtering:** The auto-probe routine in [`Expand8.c`](file:///c:/Users/egape/PNPzigbee/main/Expand8.c) explicitly skips address `0x39` (`APDS9930_I2C_ADDR`) during address scans.
   2. **Explicit Address Configuration:** `SetupExpand8` defaults directly to `32` (`0x20`), preventing unnecessary probing. Explicit address targeting (e.g., `SetupExpand8 32`) is recommended and strictly enforced in automated test fixtures.
 
-#### 4.2.5 Transaction Timeouts & System Fault Resilience
-To protect the node from hanging due to a disconnected sensor, missing pull-up resistor, or slave clock-stretching lockup:
-- **Strict Bounded Timeouts:** All I2C peripheral drivers ([`Expand8.c`](file:///c:/Users/egape/PNPzigbee/main/Expand8.c), [`ssd1306.c`](file:///c:/Users/egape/PNPzigbee/main/ssd1306.c), [`Compass.c`](file:///c:/Users/egape/PNPzigbee/main/Compass.c), [`apds9930.c`](file:///c:/Users/egape/PNPzigbee/main/apds9930.c), [`VL53L1X.c`](file:///c:/Users/egape/PNPzigbee/main/VL53L1X.c), and [`I2Craw.c`](file:///c:/Users/egape/PNPzigbee/main/I2Craw.c)) utilize a bounded timeout of `pdMS_TO_TICKS(100)` (100 ms), and `scanI2C` uses a 20 ms per-address probe timeout.
-- **Elimination of Unbounded Waits:** Unbounded `-1` (`portMAX_DELAY`) timeouts have been completely removed. Any transaction encountering bus stall conditions aborts cleanly within 100 ms, logs an error, and returns an error response upstream without starving the FreeRTOS scheduler or delaying adjacent peripherals.
+#### 4.2.5 Transaction Timeouts, Latched-Bus Detection & Automatic 9-Clock Recovery
+To protect the node from hanging due to a disconnected sensor, shorted SDA/SCL wire, missing pull-up resistor, or slave clock-stretching lockup:
+- **Strict Bounded Timeouts:** All I2C peripheral drivers ([`Expand8.c`](file:///c:/Users/egape/PNPzigbee/main/Expand8.c), [`ssd1306.c`](file:///c:/Users/egape/PNPzigbee/main/ssd1306.c), [`Compass.c`](file:///c:/Users/egape/PNPzigbee/main/Compass.c), [`apds9930.c`](file:///c:/Users/egape/PNPzigbee/main/apds9930.c), [`VL53L1X.c`](file:///c:/Users/egape/PNPzigbee/main/VL53L1X.c), [`I2Cmux.c`](file:///c:/Users/egape/PNPzigbee/main/I2Cmux.c), and [`I2Craw.c`](file:///c:/Users/egape/PNPzigbee/main/I2Craw.c)) utilize a bounded timeout of `pdMS_TO_TICKS(100)` (`200 ms` for full 1024-byte OLED frame transfers), and `scanI2C` uses a `20 ms` per-address probe timeout. Unbounded `-1` (`portMAX_DELAY`) waits have been completely eliminated.
+- **Per-Device Latched-Bus Detector ([`i2c_manager_check_latched_bus()`](file:///c:/Users/egape/PNPzigbee/main/i2c_manager.c#L182-L223)):**
+  Every I2C peripheral driver invokes its dedicated `<device>_check_latched_bus(ret)` wrapper after I2C transactions:
+  1. **Physical Line & Error Inspection:** Samples physical GPIO levels on `SDA` (`GPIO 22`) and `SCL` (`GPIO 23`) via [`i2c_manager_is_bus_latched()`](file:///c:/Users/egape/PNPzigbee/main/i2c_manager.c#L100-L107). If `SDA == 0`, `SCL == 0`, `err == ESP_ERR_TIMEOUT`, or `err == ESP_ERR_INVALID_STATE`, the bus is declared latched.
+  2. **Upstream Coordinator Alert:** Immediately transmits an upstream alert message to the Coordinator (rate-limited to once every 3.0 seconds while latched):
+     ```text
+     I2C BUS LATCHED: <DEVICE> (SDA=<0|1> SCL=<0|1>)
+     ```
+     (where `<DEVICE>` identifies the reporting peripheral: `SSD1306`, `EXPAND8`, `COMPASS`, `APDS9930`, `VL53L1X`, `I2CMUX`, or `I2CRAW`).
+  3. **Automatic In-Place Hardware Bus Recovery ([`i2c_manager_recover_bus()`](file:///c:/Users/egape/PNPzigbee/main/i2c_manager.c#L117-L187)):**
+     First attempts `i2c_master_bus_reset()`. If `SDA` or `SCL` remains held LOW by a wedged slave state machine, the manager temporarily reconfigures `GPIO 22` and `GPIO 23` as open-drain inputs/outputs with pull-ups, bit-bangs up to **9 manual SCL clock pulses** (releasing early if `SDA` returns HIGH), and generates a clean I2C `STOP` condition—**without calling `i2c_del_master_bus()`** (which would fail while peripheral `i2c_master_dev_handle_t` handles are attached and orphan the bus). It then re-binds `GPIO 22` and `GPIO 23` back to `I2C_NUM_0` in the ESP32-C6 GPIO matrix ([`s_restore_i2c_gpio_matrix()`](file:///c:/Users/egape/PNPzigbee/main/i2c_manager.c#L92-L115)) and executes `i2c_master_bus_reset()`, preserving `s_i2c_bus_handle` and all attached peripheral device handles across the recovery. Once a subsequent transaction succeeds with `SDA=1, SCL=1`, the latched flag is automatically cleared.
 
 ---
 
@@ -292,19 +317,23 @@ To protect the node from hanging due to a disconnected sensor, missing pull-up r
 ### 5.1 Motor & Actuator Drivers
 
 #### 1. DC Motor Driver (`motor_driver`)
-Supports bidirectional brushed DC motor control with speed ramp slew rate limiting:
+Supports bidirectional brushed DC motor control with speed ramp slew rate limiting and autonomous RF-loss fail-safe throttling ([`motor_driver.c`](file:///c:/Users/egape/PNPzigbee/main/motor_driver.c)):
 - **Operating Modes:**
   - `Mode 0 (DRV8833)`: Dual-PWM H-Bridge control using 2 LEDC channels (IN1 on GPIO 18, IN2 on GPIO 20).
   - `Mode 1 (Cytron 10C)`: Single PWM speed channel on GPIO 18 + standard GPIO directional pin on GPIO 20.
 - **Speed Range:** `-1000` (full reverse) to `+1000` (full forward), `0` = dynamic brake/stop.
-- **Slew Rate Generator:** FreeRTOS task (`motor_slew_task`) updates motor output every 20ms according to configurable slew units per second (`MotorSlew`).
+- **Slew Rate Generator:** FreeRTOS task (`motor_slew_task`) updates motor output every 20ms (50 Hz) according to configurable slew units per second (`MotorSlew`). When a slewed ramp finishes (`MotorSlew > 0`), the node automatically transmits `Motor At <speed>` upstream to the Coordinator.
+- **Autonomous RF-Loss Gentle Stop (`RFlossThrottle`):**
+  - Continuously monitors `mesh_zigbee_is_coordinator_connected()` at 50 Hz.
+  - If the RF link to the Coordinator is declared lost (after tolerating 3 missing heartbeats: $> 6.0\text{ s}$ silence or 4 consecutive MAC transmission failures), `RFlossThrottle` linearly slews from `1.0` down to `0.0` over **1.0 second** (`-0.02` per 20ms tick), smoothly bringing the motor to a halt without losing the target `MotorSpeed` state.
+  - When the Coordinator link is restored, `RFlossThrottle` smoothly ramps back from `0.0` to `1.0` over **1.0 second**. `GetRFlossThrottle` queries the instantaneous throttle multiplier (`RFlossThrottle <0.00..1.00>`).
 
 #### 2. 4-Phase Bipolar/PWM Stepper Controller (`Stepper`)
 Four-pin PWM-chopped phase control for bipolar stepper motors via dual H-bridge drivers such as the HiLetgo DRV8833 ([`Stepper.c`](file:///c:/Users/egape/PNPzigbee/main/Stepper.c)):
-- **Default Pins:** `ApGPIO` = 1, `AnGPIO` = 21, `BpGPIO` = 2, `BnGPIO` = 0 (allocates 4 LEDC channels and 1 shared 8-bit LEDC timer at **25,000 Hz (25 kHz)** ultrasonic default so motor coils operate silently without audible whine). Dynamically re-binding pins at runtime resets previous pin matrix mappings via `gpio_reset_pin()` before attaching LEDC channels.
+- **Default Pins & Mutual Exclusion:** `ApGPIO` = 1, `AnGPIO` = 21, `BpGPIO` = 2, `BnGPIO` = 0 (allocates 4 LEDC channels and 1 shared 8-bit LEDC timer at **25,000 Hz (25 kHz)** ultrasonic default so motor coils operate silently without audible whine). Because `Stepper` and `unipolarStep` share the same default pins (`1, 2, 21, 0`), `Stepper_Init()` automatically invokes `UnipolarStep_Deinit()` first, and dynamically re-binding pins at runtime resets previous pin matrix mappings via `gpio_reset_pin()` before attaching LEDC channels.
 - **Modes:** Full-Step (4-step) and Half-Step (8-step) lookup tables (`FullStep`, `HalfStep`).
 - **Active & Holding Current:** `StepPWMduty` sets active drive duty percentage (default 25%), `StepPWMfreq` adjusts the PWM carrier frequency in Hz (default 25,000 Hz), and `HoldPWM` sets a reduced PWM duty cycle when stationary to prevent overheating while maintaining holding torque (0% = freewheel).
-- **Motion Profiling:** Configurable acceleration (`Accel`) and deceleration (`Decel`) step counts ramping between `max_ms_per_step` (200 ms) and `msPerStep` (default 20 ms).
+- **Motion Profiling:** Configurable acceleration (`Accel`) and deceleration (`Decel`) step counts ramping between `max_ms_per_step` (200 ms) and `msPerStep` (default 20 ms). All commands accept either space-delimited (`StepPWMduty 75`) or `=` assignment (`StepPWMduty=75`) syntax.
 
 #### 3. Unipolar Stepper Controller (`unipolarStep` — Adafruit 28BYJ-48 Small Reduction Stepper)
 Dedicated digital 4-phase driver ([`unipolarStep.c`](file:///c:/Users/egape/PNPzigbee/main/unipolarStep.c), [`unipolarStep.h`](file:///c:/Users/egape/PNPzigbee/main/unipolarStep.h)) for 5-wire unipolar reduction stepper motors (such as the Adafruit 28BYJ-48 with 5V center-tap driven by 4 gate-level N-channel MOSFETs):
@@ -315,9 +344,10 @@ Dedicated digital 4-phase driver ([`unipolarStep.c`](file:///c:/Users/egape/PNPz
     - Step 2 (`0101`): Orange (`0`), Pink (`1`), Yellow (`0`), Blue (`1`)
     - Step 3 (`1001`): Orange (`1`), Pink (`0`), Yellow (`0`), Blue (`1`)
   - `Mode 1 (8-Step Half-Step)`: Alternates single-coil and dual-coil excitation (`Orange` $\rightarrow$ `Orange+Yellow` $\rightarrow$ `Yellow` $\rightarrow$ `Pink+Yellow` $\rightarrow$ `Pink` $\rightarrow$ `Pink+Blue` $\rightarrow$ `Blue` $\rightarrow$ `Orange+Blue`) for smoother micro-motion.
-- **Default Pin Assignment & I2C Bus Independence:**
+- **Default Pin Assignment, Bipolar Deinit & I2C Bus Independence:**
   - **Coil A:** Orange = `GPIO 1` (`motor_pin_1`), Pink = `GPIO 2` (`motor_pin_2`).
   - **Coil B:** Yellow = `GPIO 21` (`motor_pin_3`), Blue = `GPIO 0` (`motor_pin_4`).
+  - `UnipolarStep_Init()` automatically calls `Stepper_Deinit()` first to detach any active bipolar LEDC PWM channels on pins `1, 2, 21, 0`.
   - By routing the Blue phase to `GPIO 0`, the shared I2C pins (`GPIO 22` SDA and `GPIO 23` SCL) remain 100% untouched and available for concurrent sensor/OLED operation.
 - **Trapezoidal Acceleration & Deceleration Profiling:**
   - Configured via three parameters:
@@ -333,7 +363,7 @@ Dedicated digital 4-phase driver ([`unipolarStep.c`](file:///c:/Users/egape/PNPz
   - Step timing uses a hybrid microsecond timer (`delay_ms_float`) combining `vTaskDelay` for coarse intervals ($\ge 25\text{ ms}$) with `esp_rom_delay_us(500)` + `taskYIELD()` loops for sub-tick precision without starving idle/radio tasks.
   - Upon completing any move (or receiving `UniStepStop`), `UnipolarStep_PowerDown()` automatically drives all 4 MOSFET gates LOW (`0`), eliminating quiescent current draw and coil heating.
 
-#### 5. Multi-Channel PWM Driver, Servo Slew & RGB LED Fading (`pwm_driver`)
+#### 4. Multi-Channel PWM Driver, Servo Slew & RGB LED Fading (`pwm_driver`)
 Provides 4 independent hardware-timed PWM channels (`PWM1`–`PWM4`, [`pwm_driver.c`](file:///c:/Users/egape/PNPzigbee/main/pwm_driver.c)):
 - **Hardware Resolution & Defaults:** 10-bit duty cycle resolution (`0` to `1023`), 50 Hz default frequency, and default pin assignments (`PWM1` = GPIO 2, `PWM2` = GPIO 21, `PWM3` = GPIO 4, `PWM4` = GPIO 5).
 - **Dynamic Reconfiguration:** Each channel supports runtime GPIO pin reassignment (`pwmPin<1-4> <gpio>`), frequency updates (`pwmFreq<1-4> <hz>`), and linear slew-rate control (`pwmSlew<1-4> <units/sec>`). When a pin is reassigned on an active channel, the previous GPIO is cleanly released via `gpio_reset_pin()`.
@@ -346,7 +376,7 @@ Provides 4 independent hardware-timed PWM channels (`PWM1`–`PWM4`, [`pwm_drive
   - By assigning 3 PWM channels (`PWM1` $\rightarrow$ Pin 18 Red, `PWM2` $\rightarrow$ Pin 20 Green, `PWM3` $\rightarrow$ Pin 19 Blue at `1000 Hz`) and setting a coordinated slew rate (e.g. `pwmSlew<1-3> 2046` for a 0.5s ramp across 1023 counts), the ESP32-C6 performs hardware-smooth 0% $\rightarrow$ 100% $\rightarrow$ 0% color fades on individual channels or all three channels simultaneously using only two wireless commands per fade cycle (one for peak target duty, one for off duty).
   - Supports both Common Cathode (`0` = OFF, `1023` = 100% ON) and Common Anode tied to 3.3V (`1023` = OFF, `0` = 100% ON).
 
-#### 6. Addressable RGB Strip (`NeoPixel` / WS2812B)
+#### 5. Addressable RGB Strip (`NeoPixel` / WS2812B)
 - **Driver & Hardware DMA Architecture:** Driven via the ESP32-C6 General Purpose SPI controller (`SPI2_HOST` / GPSPI2) coupled to hardware General Purpose DMA (GDMA) at 2.5 MHz resolution (`LED_STRIP_COLOR_COMPONENT_FMT_GRB`). By routing SPI MOSI through the GPIO Matrix to any target pin and streaming directly out of internal DMA SRAM, the driver operates with **zero CPU interrupt overhead**. This completely eliminates microsecond-level RMT FIFO starvation, making pixel transmission 100% immune to Wi-Fi/ESP-NOW interrupt preemption and rock-solid at reduced CPU clock rates (such as 80 MHz). Supports up to `MAX_PIXELS = 100` (default `16`). `NeoGPIO <gpio> [count]` dynamically configures both the output GPIO pin and active pixel count (e.g. `NeoGPIO 19 7`), cleanly freeing and reallocating the SPI bus and clearing all pixels to black.
 - **Two-Stage RAM Frame Buffer:** `pixel_ram[MAX_PIXELS][3]` supports indexed per-channel staging (`NeoRED <idx> <val>`, `NeoGREEN <idx> <val>`, `NeoBLUE <idx> <val>`) committed in bulk via `NeoUpdate`.
 - **Single-Command Atomic Color & Clear Operations:** To minimize wireless packet overhead during strand animations and HIL testing, `NeoPixel.c` provides atomic commands that update the RAM buffer and immediately refresh the physical WS2812B strip in a single transaction:
@@ -361,13 +391,15 @@ Provides 4 independent hardware-timed PWM channels (`PWM1`–`PWM4`, [`pwm_drive
 ### 5.2 Sensor & Telemetry Subsystems
 
 #### 1. Time-of-Flight Distance (`VL53L1X`)
-- **Range:** Millimeter-accurate optical distance measurement up to 4 meters.
-- **Hysteresis Alerting:** Monitors `VLUpperThresh` and `VLLowerThresh`. Triggers an upstream notification when an object enters or leaves the defined window.
-- **Streaming:** Optional real-time distance streaming (`StreamVL 1`).
+- **Range:** Millimeter-accurate optical distance measurement up to 4 meters ([`VL53L1X.c`](file:///c:/Users/egape/PNPzigbee/main/VL53L1X.c)).
+- **Multi-Sensor `I2Cmux` Support:** Supports both a direct main-bus sensor and up to 8 multiplexed sensors behind a TCA9548A (`I2Cmux` channels `0..7`), round-robin polled every 50 ms (`vl53l1x_task`).
+- **Hysteresis Alerting:** Monitors `VLUpperThresh` and `VLLowerThresh` (defaults: `400` and `500`). Triggers an upstream notification (`VL Object Detected <ts>` / `VL Object Removed <ts>`, or `VL Object Detected_mxN <ts>` / `VL Object Removed_mxN <ts>` when on mux channel `N`) when an object enters or leaves the defined window.
+- **Streaming:** Optional real-time distance streaming every 500 ms (`StreamVL 1`).
 
 #### 2. Proximity & Light (`APDS-9930`)
-- **Sensing:** Optical infrared proximity with configurable pulse count (`Npulses`).
-- **Hysteresis Comparator:** Evaluates upper and lower proximity thresholds (`ProxHighThrsh` / `UpperThresh` and `ProxLowThrsh` / `LowerThresh`); reports state transitions (`Car Detected <val>` / `Car removed <val>`) to the Coordinator, plus on-demand instantaneous queries (`ReadProx` / `ReadProximity` $\rightarrow$ `PROXval <val>`).
+- **Sensing:** Optical infrared proximity ([`apds9930.c`](file:///c:/Users/egape/PNPzigbee/main/apds9930.c)) with configurable IR LED pulse count (`Npulses`, default 8, automatically applied to the main-bus sensor and all registered `I2Cmux` sensors).
+- **Multi-Sensor `I2Cmux` Support:** Supports both a main-bus sensor and up to 8 multiplexed sensors on `I2Cmux` channels `0..7`, round-robin polled every 20 ms (`proximity_task`) with independent per-channel hysteresis state machines.
+- **Hysteresis Comparator:** Evaluates upper and lower proximity thresholds (`ProxHighThrsh` / `UpperThresh` and `ProxLowThrsh` / `LowerThresh`, defaults `500` and `400`); reports state transitions (`Car Detected[_mxN] <val>` / `Car removed[_mxN] <val>`) to the Coordinator, plus on-demand instantaneous queries (`ReadProx` / `ReadProximity` $\rightarrow$ `PROXval[_mxN] <val>` or `PROX NOT READY`), and optional 200 ms serial streaming (`StreamProx 1`).
 
 #### 3. 12-Bit Analog Input (`adc`)
 - **Channels:** `A0` (GPIO 0 / `ADC1_CH0`), `A1` (GPIO 1 / `ADC1_CH1`), `A2` (GPIO 2 / `ADC1_CH2`). Either or both `A0` and `A1` (as well as `A2`) can be configured concurrently as high-impedance analog inputs (internal pull-up/pull-down disabled) with automatic SAR mux settling and 4x oversampling.
@@ -413,13 +445,14 @@ Provides 4 independent hardware-timed PWM channels (`PWM1`–`PWM4`, [`pwm_drive
   - **Automated HIL Verification:**
     - Supported directly in [`test_runner.py`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py) under Interactive Menu **`[J]`** (or CLI flag `--rfdrop`), which arms `Garage Pin 18`, guides the user to disconnect Coordinator power, verifies the 4 Hz flash, and validates automatic recovery when power is restored.
 
-#### 5. 8-Bit I/O Port Expander (`Expand8` / PCF8574 — Dual-Instance Support)
+#### 5. 8-Bit I/O Port Expander (`Expand8` / PCF8574 — Multi-Instance & 250ms Change Reporting)
 - **Silicon Architecture:** Quasi-bidirectional 8-bit open-drain I/O expander communicating over the shared I2C bus.
-- **Dual-Chip Instance Management (`EXPAND8_MAX_INSTANCES = 2`):** Supports up to **two simultaneous PCF8574 / PCF8574A chips** on the shared I2C bus (e.g., `0x20` / 32 and `0x21` / 33). Each instance maintains its own dedicated `i2c_master_dev_handle_t` and independent 8-bit port state shadow register (`port_state`, initialized to `0xFF` / high-impedance inputs with internal weak pull-ups) so bit-level writes on one chip never clobber the other chip's pin states.
-- **Per-Command Address Targeting (Decimal or Hex):** Every command accepts an optional I2C slave address (`8..119` decimal or `0x08..0x77` hex). If `[addr]` is omitted, the command targets the most recently initialized/selected chip. Once `SetupExpand8` has been called at least once, passing a second chip's address to any read/write command automatically allocates and initializes the second instance slot on the fly if not already registered.
+- **Multi-Instance & Per-Mux-Channel Shadow State (`EXPAND8_MAX_INSTANCES = 8`, `mux_port_state[8]`):** Supports up to 8 simultaneous PCF8574 (`0x20..0x27`) / PCF8574A (`0x38..0x3F`) chips across distinct I2C addresses (e.g., `32` (`0x20`) and `33` (`0x21`) on the main I2C bus) as well as multiple PCF8574 chips behind a TCA9548A `I2Cmux`.
+- **Autonomous 250ms Pin-Change Polling (`expand8_poll_task`):** Once `SetupExpand8` is initialized, a background FreeRTOS task (`expand8_poll_task`, 250 ms period) samples every initialized I/O expander over I2C and compares the 8-bit port byte against `last_sampled_val`. Whenever any pin state changes on an expander at decimal I2C address `<addr>`, the node automatically pushes **`NewByte_<addr> <X>`** (where `<addr>` is the decimal I2C address such as `32` or `33`, and `<X>` is the new decimal byte value `0..255`) upstream to the Coordinator via `SendTheMessage()`.
+- **Per-Command Address Targeting (Decimal or Hex):** Every command accepts an optional I2C slave address (`8..119` decimal or `0x08..0x77` hex). If `[addr]` is omitted, the command targets the most recently initialized/selected chip. Once `SetupExpand8` has been called at least once, passing a second chip's address to any read/write command automatically allocates and initializes the instance slot on the fly if not already registered.
 - **Bit-Level Operations:**
   - `wrExpand8 <bit> [val] [addr]` (or `wrExpand8 <addr> <bit> <val>`): Writes digital level (0 or 1, default 1) to individual bit index (0–7) on the active or specified chip.
-  - `setExpand8 <bit> [addr]` / `clrExpand8 <bit> [addr]`: Atomic bit set / clear operations on the active or specified chip.
+  - `setExpand8 <bit> [addr]` / `clrExpand8 <bit> [addr]` (or `<addr> <bit>`): Atomic bit set / clear operations on the active or specified chip.
   - `rdExpand8 <bit> [addr]` (or `rdExpand8 <addr> <bit>`): Queries individual bit state, returning `EXPAND8 <bit> IS <0|1>`.
 - **Byte-Level Operations:**
   - `wrExpand8byte <val> [addr]`: Atomic 8-bit write updating all output pins simultaneously on the active or specified chip.
@@ -450,7 +483,7 @@ Provides 4 independent hardware-timed PWM channels (`PWM1`–`PWM4`, [`pwm_drive
 - **Commands & Telemetry:**
   - `ClearDisp`: Clears the display to black, zeroes the framebuffer, and resets the line cursor to line 0 (top of screen). Returns `CLEARDISP OK` or `CLEARDISP FAIL`.
   - `print <size> <string>`: Prints arbitrary text string (supports spaces) at specified point size (9, 12, 18, 24; defaults to 12) on current line and advances cursor. Returns `PRINT OK` or `PRINT FAIL`.
-  - `PrintLines <size> <line1>|<line2>` / `Print2 <size> <line1>|<line2>`: Renders line 1 at y=0 and line 2 at y=yAdvance in a single atomic transmission, refreshing the OLED screen once. Eliminates screen blanking flicker and reduces OTA round-trip latency by 8x for status screens. Returns `PRINT OK` or `PRINT FAIL`.
+  - `PrintLines <size> <line1>|<line2>[|<line3>...]` / `Print2 <size> <line1>|<line2>` / `Print3 <size> <line1>|<line2>|<line3>`: Renders up to 4 pipe-separated (`|`) lines in a single atomic transmission (`ssd1306_print_multilines`), clearing the framebuffer and refreshing the OLED screen once. Eliminates screen blanking flicker and reduces OTA round-trip latency by 8x for status screens and interactive multi-line menus. Returns `PRINT OK` or `PRINT FAIL`.
   - `PrintAt <line_idx> [size] <string>`: Renders text at a specific vertical line index (0, 1, 2) without erasing or disturbing other lines on the display. Returns `PRINT OK` or `PRINT FAIL`.
   - `SetupDisp [addr]` / `SetupSSD1306 [addr]`: Explicitly creates the shared I2C bus and initializes the SSD1306 hardware at specified 7-bit address (default: `0x3C` / 60). Returns `SETUP DISP OK` or `SETUP DISP FAIL`.
   - Responses suppress generic `[ACK]` frames to optimize wireless bandwidth.
@@ -465,7 +498,7 @@ Provides 4 independent hardware-timed PWM channels (`PWM1`–`PWM4`, [`pwm_drive
   3. **Continuous Measurement Mode:** Configures Control Register 1 (`0x09`) with `0x1D`:
      - **Mode:** Continuous measurement mode (`0x01`).
      - **Output Data Rate (ODR):** 200 Hz (`0x0C` field mask).
-     - **Full Scale Range:** ±8 Gauss (`0x00` field mask, sensitivity ~3000 LSB/Gauss).
+     - **Full Scale Range:** ±8 Gauss (`0x10` field mask, sensitivity ~3000 LSB/Gauss).
      - **Over-Sampling Ratio (OSR):** 512 samples (`0x00` field mask).
   4. **Pointer Roll-Over:** Configures Control Register 2 (`0x0A`) with `0x40` to enable automatic register pointer roll-over across 6-byte bursts.
 - **Data Acquisition & Vector Readout:**
@@ -473,16 +506,38 @@ Provides 4 independent hardware-timed PWM channels (`PWM1`–`PWM4`, [`pwm_drive
   - Reconstructs signed 16-bit 2's complement vector components: $X, Y, Z$.
   - In 2D plane navigation, magnetic azimuth heading angle is computed via $\theta = \operatorname{atan2}(Y, X) \times \frac{180}{\pi} \pmod{360^\circ}$.
 - **3-Axis Signed Hysteresis Comparator (`compass_task`):**
-  - Automatically started upon `SetupCompass`, polling $(X, Y, Z)$ at 20 Hz (50 ms interval) with mutex-protected I2C access.
-  - Implements an independent 3-state comparator (`-1`, `0`, `+1`) on each dimension (`X`, `Y`, `Z`) with configurable `[LowMag, HighMag]` thresholds (defaults: `LowMag = 1000`, `HighMag = 2000`) supporting both positive-going `[+LowMag, +HighMag]` and negative-going `[-LowMag, -HighMag]` hysteresis:
+  - Automatically started upon `SetupCompass`, polling $(X, Y, Z)$ at 20 Hz (50 ms interval) across the main bus and any registered `I2Cmux` channels (`0..7`) with mutex-protected I2C access.
+  - Implements an independent 3-state comparator (`-1`, `0`, `+1`) on each dimension (`X`, `Y`, `Z`) per sensor instance with configurable `[LowMag, HighMag]` thresholds (defaults: `LowMag = 1000`, `HighMag = 2000`) supporting both positive-going `[+LowMag, +HighMag]` and negative-going `[-LowMag, -HighMag]` hysteresis:
     - **Positive-Going Hysteresis:** Transitions to state `1` when $\text{val} > +\text{HighMag}$; remains in state `1` until $\text{val} < +\text{LowMag}$ (returns to `0`, or `-1` if $\text{val} < -\text{HighMag}$).
     - **Negative-Going Hysteresis:** Transitions to state `-1` when $\text{val} < -\text{HighMag}$; remains in state `-1` until $\text{val} > -\text{LowMag}$ (returns to `0`, or `+1` if $\text{val} > +\text{HighMag}$).
-  - Enqueues upstream alert messages `Mag<X|Y|Z> <state> <X> <Y> <Z>` (e.g., `MagY 0 520 142 -850`, `MagX 1 2150 120 -300`) containing all three magnetic dimensions at the time of the threshold crossing via `SendTheMessage()` with state tracking so the final resting state is guaranteed never to be dropped.
+  - Enqueues upstream alert messages `Mag<X|Y|Z>[_mxN] <state> <X> <Y> <Z>` (e.g., `MagY 0 520 142 -850`, `MagX_mx0 1 2150 120 -300`) containing all three magnetic dimensions at the time of the threshold crossing via `SendTheMessage()` with state tracking so the final resting state is guaranteed never to be dropped.
 - **Commands & Telemetry:**
-  - `SetupCompass [addr]`: Initializes the shared I2C bus, configures the QMC5883L (default address `13` / `0x0D`), and starts `compass_task`. Returns `SETUP COMPASS OK` or `SETUP COMPASS FAIL`.
-  - `GetCompass` / `ReadCompass`: Reads instantaneous magnetic field vector and returns `COMPASS <x> <y> <z>` (e.g. `COMPASS -531 -282 -317`) in raw LSB units, or `COMPASS NOT READY` if uninitialized.
+  - `SetupCompass [addr]`: Initializes the shared I2C bus, configures the QMC5883L (default address `13` / `0x0D`) on the main bus or currently selected `I2Cmux` channel, and starts `compass_task`. Returns `SETUP COMPASS OK` or `SETUP COMPASS FAIL`.
+  - `GetCompass` / `ReadCompass`: Reads instantaneous magnetic field vector and returns `COMPASS[_mxN] <x> <y> <z>` (e.g. `COMPASS -531 -282 -317`) in raw LSB units, or `COMPASS NOT READY` if uninitialized.
   - `LowMag <val>` / `HighMag <val>` (plus per-axis `LowMag<X|Y|Z> <val>`, `HighMag<X|Y|Z> <val>`): Configures the positive `[LowMag, HighMag]` and negative `-[LowMag, HighMag]` hysteresis thresholds (default `[1000, 2000]`).
+  - `StreamCompass <0|1>`: Enables or disables live 300 ms (6 × 50 ms polls) serial console streaming.
   - Telemetry frames automatically suppress generic `[ACK]` packets across the wireless mesh.
+
+#### 9. 8-Channel I2C Bus Multiplexer (`I2Cmux` / TCA9548A)
+- **Silicon Architecture & Purpose:** 1-to-8 bidirectional I2C bus switch ([`I2Cmux.c`](file:///c:/Users/egape/PNPzigbee/main/I2Cmux.c), [`I2Cmux.h`](file:///c:/Users/egape/PNPzigbee/main/I2Cmux.h)) operating on the shared I2C bus at configurable 7-bit address `0x70`–`0x77` (default `0x70` / 112). Allows up to 8 isolated downstream `SDx`/`SCx` I2C sub-buses (`X = 0..7`) so multiple identical fixed-address sensors or expanders (e.g., multiple `APDS-9930` proximity sensors facing multiple directions at `0x39`, multiple `VL53L1X` at `0x29`, multiple `QMC5883L` at `0x0D`, or multiple `PCF8574` at `0x21`) can operate concurrently on the same node without address collisions.
+- **Multi-Sensor Round-Robin Polling, Mux Lock & `_mxN` Naming Convention:**
+  - When a sensor setup command (`SetupProximity`, `SetupCompass`, or `SetupVL`) is executed while an `I2Cmux` port `N` (`0..7`) is selected via `SetI2Cmux <N>`, the driver registers port `N` in its active `s_mux_channel_mask` and allocates an independent hysteresis state machine for port `N`.
+  - On each background polling cycle (`proximity_task`, `compass_task`, `vl53l1x_task`), the driver iterates through all registered mux ports using [`i2cmux_switch_and_lock()`](file:///c:/Users/egape/PNPzigbee/main/I2Cmux.c#L261-L290) and [`i2cmux_restore_and_unlock()`](file:///c:/Users/egape/PNPzigbee/main/I2Cmux.c#L292-L298) (protected by a recursive FreeRTOS mutex so background polling never disturbs foreground `SetI2Cmux` or `Expand8` operations).
+  - Upstream event and telemetry messages originating from a sensor on `I2Cmux` port `N` (`0..7`) automatically append **`_mxN`** to the existing event/telemetry name (while non-muxed main-bus sensors omit the suffix):
+    - **APDS-9930 (`apds9930.c`):** `Car Detected_mxN <val>`, `Car removed_mxN <val>`, `PROXval_mxN <val>`
+    - **QMC5883L (`Compass.c`):** `MagX_mxN <state> <X> <Y> <Z>` (`MagY_mxN`, `MagZ_mxN`), `COMPASS_mxN <X> <Y> <Z>`
+    - **VL53L1X (`VL53L1X.c`):** `VL Object Detected_mxN <ts>`, `VL Object Removed_mxN <ts>`
+- **Control Register & Channel Switching:**
+  - `SetupI2Cmux [addr]`: Initializes the shared I2C bus, probes the TCA9548A at `[addr]` (default `0x70` / `112`), and resets all downstream channels OFF (`0x00`). Returns `SETUP I2CMUX OK` or `SETUP I2CMUX FAIL`.
+  - `SetI2Cmux <X> [addr]` (or `SetI2Cmux <addr> <X>`): Connects downstream channel `X` (`0`–`7`, writing `1 << X` to the control register), or disconnects all downstream channels when `X < 0` or `X > 7` (e.g. `-1` or `8`, writing `0x00`). Returns `SET I2CMUX OK` or `SET I2CMUX FAIL`.
+  - `SetI2CmuxMask <mask> [addr]` (or `SetI2CmuxMask <addr> <mask>`): Writes an arbitrary 8-bit channel bitmask (`0x00`–`0xFF`) to enable any combination of downstream buses simultaneously. Returns `SET I2CMUX OK` or `SET I2CMUX FAIL`.
+  - `GetI2Cmux [addr]` / `ReadI2Cmux [addr]`: Reads the 8-bit control register directly from the TCA9548A and reports the active state (`I2CMUX CH <X>`, `I2CMUX NONE`, `I2CMUX MASK 0x<HEX>`, or `I2CMUX RD FAIL`).
+
+#### 10. Keyes KY-040 Quadrature Rotary Encoder (`Rotary`)
+- **Architecture & Ben Buxton State Machine:** Hardware GPIO interrupt-driven quadrature decoder and debounced pushbutton driver ([`Rotary.c`](file:///c:/Users/egape/PNPzigbee/main/Rotary.c), [`Rotary.h`](file:///c:/Users/egape/PNPzigbee/main/Rotary.h)) for the Keyes KY-040 module (`CLK` Phase A, `DT` Phase B, `SW` pushbutton).
+- **Quadrature Decoding:** Uses Ben Buxton's noise-immune finite state machine table driven by `GPIO_INTR_ANYEDGE` ISRs on `CLK` and `DT`. Supports both **Half-Step mode** (default `s_half_step = true`, emitting events at both `00` and `11` detents) and **Full-Step mode** (`SetRotaryHalfStep 0`, emitting events at the `11` detent).
+- **Bidirectional Pushbutton Settling (`SW`):** Triggered by `GPIO_INTR_ANYEDGE` ISR on `SW`, which wakes `rotary_task` and waits **30 ms** (`ROTARY_SW_DEBOUNCE_US = 30000`) for contact bounce to settle before reading the steady pin level. Emits `RotaryButtonDown` when pressed (`level == 0`) and `RotaryButtonUp` when released (`level == 1`).
+- **Raw 2-Bit Diagnostic Monitor (`rot_raw_task`):** Optional 2 ms polling task (`MonitorRotary 1` / `StreamRotary 1`) that reports every state change on `[CLK, DT, SW]` with millisecond delta timestamps (`RotaryBits <bits> clk=<c> dt=<d> sw=<s> +<delta>ms`).
 
 ---
 
@@ -507,18 +562,21 @@ Provides 4 independent hardware-timed PWM channels (`PWM1`–`PWM4`, [`pwm_drive
 | `disc_node_task` | End Device | Core 0 / P5 | 3072 B | Layer 1 exponential-backoff `HELLO` boot announcer & active 500ms link loss heartbeat monitor |
 | `serial_console_task`| End / Unprov | Core 0 / P5 | 3072 B | Interactive USB console reader, line editor, RF CLI, and NVS provisioning shell |
 | `button_task` | End Device | Core 0 / P5 | 2048 B | 20ms debounced monitor for physical boot button (GPIO 9) |
-| `throttle_task` | End Device | Core 0 / P5 | 2048 B | Upstream message queue consumer (`UpstreamQ`, 200ms rate limiter) |
+| `throttle_task` | End Device | Core 0 / P5 | 2048 B | Upstream message queue consumer (`UpstreamQ`, immediate forwarding with 10ms TX-full backpressure retry) |
 | `gpio_poll_task` | End Device | Core 0 / P5 | 2048 B | 50ms periodic digital input pin state change scanner |
 | `rfdrop_blink_task` | End Device | Core 0 / P4 | 2048 B | 125ms RF disconnect blink generator (4 Hz flash on severed coordinator connection) |
-| `motor_slew_task` | End Device | Core 0 / P5 | 2048 B | 20ms DC motor speed ramp generator (`motor_driver`) |
+| `motor_slew_task` | End Device | Core 0 / P5 | 2048 B | 20ms DC motor speed ramp & RF-loss fail-safe throttle generator (`motor_driver`) |
 | `pwm_slew_task` | End Device | Core 0 / P5 | 2048 B | 20ms (50Hz) 4-channel linear PWM duty cycle ramp generator (`pwm_driver`) |
 | `stepper_task` | End Device | Core 0 / P5 | 2048 B | 4-phase PWM-chopped stepper sequencing, ramping, and holding torque task |
 | `unipolar_task` | End Device | Core 0 / P4 | 3072 B | 4-phase unipolar stepper worker task with trapezoidal accel/decel & auto power-down |
 | `vl53_task` | End Device | Core 0 / P5 | 3072 B | 50ms ToF distance reading, filtering, and threshold check |
 | `prox_task` | End Device | Core 0 / P5 | 3072 B | 20ms optical proximity reading and threshold evaluation |
 | `compass_task` | End Device | Core 0 / P5 | 3072 B | 50ms 3-axis QMC5883L magnetic field reading and signed `[LowMag, HighMag]` hysteresis comparator |
-| `adc_task` | End Device | Core 0 / P5 | 2048 B | Periodic round-robin analog sampling and Schmitt-trigger hysteresis evaluation |
-| `serial_bridge_rx_task` | End Device | Core 0 / P5 | 2048 B | Hardware UART1 character receiver and line buffer |
+| `expand8_poll_task` | End Device | Core 0 / P5 | 3072 B | 250ms PCF8574 port state polling and upstream `NewByte_<addr> <X>` pin-change notifier |
+| `adc_task` | End Device | Core 0 / P5 | 3072 B | Periodic round-robin analog sampling, Schmitt-trigger comparator, and `ADCpot` detent evaluator |
+| `rotary_task` | End Device | Core 0 / P5 | 3072 B | Quadrature CW/CCW event dispatcher and 30ms debounced `RotaryButtonDown`/`Up` worker |
+| `rot_raw_task` | End Device | Core 0 / P5 | 3072 B | Optional 2ms raw quadrature/SW bit transition monitor (`MonitorRotary`) |
+| `serial_bridge_rx` | End Device | Core 0 / P5 | 3072 B | Hardware UART1 character receiver and line buffer |
 | `coord_mesh_tx` | Coordinator | Core 0 / P5 | 3072 B | Coordinator outgoing ESP-NOW frame dispatcher |
 | `coord_app_msg` | Coordinator | Core 0 / P5 | 3072 B | Coordinator inbound telemetry/ACK processor and auto-ACK responder |
 | `coord_console` | Coordinator | Core 0 / P5 | 3072 B | Coordinator interactive USB gateway CLI (`GiveNetworkReport`, `PingNetwork`, etc.) |
@@ -543,13 +601,14 @@ All commands can be sent over the air from the Coordinator Hub (`<TargetNode> <C
 | `PingNetwork` | *none* | *(Coordinator CLI)* Queue unicast `PING` to all registered nodes | `PING_NETWORK_BEGIN...END` |
 | `ResetNetwork` | *none* | *(Coordinator CLI)* Clear RAM routing table and broadcast `DISCOVER_ALL` | `RESET_NETWORK_BEGIN...END` |
 | `ResetCoordinator` | *none* | *(Coordinator CLI)* Reboot the Coordinator Hub | `RESET_COORDINATOR_RESTARTING` |
-| `SetRole` | `Coordinator \| EndDevice <Name> \| Unprovisioned` | *(USB CLI)* Provision device role in NVS and reboot | `[NVS] Configuration committed` |
-| `SetName` | `<NewName>` | *(USB CLI)* Persist node name (max 16 chars) in NVS | `[NVS] Writing name... OK` |
+| `SetRole` | `Coordinator \| EndDevice <Name> \| Unprovisioned` | *(USB CLI)* Provision device role in NVS and reboot (`EndDevice` requires a valid unique `<Name>`) | `[NVS] Configuration committed` |
+| `SetName` | `<NewName>` | *(USB CLI)* Persist unique node name (2–17 chars; rejects `Node`, `Unassigned`, `default`) in NVS | `[NVS] Writing name... OK` |
 | `SetChannel` | `<1-14>` | *(USB CLI)* Persist and tune 2.4 GHz Wi-Fi/ESP-NOW channel | `[NVS] Writing channel... OK` |
 | `SetTxPower` | `<8-84>` | *(USB CLI)* Set max TX power in 0.25 dBm units (`80` = +20.0 dBm) | `[NVS] Writing TX power... OK` |
 | `SetLR`, `SetLongRange` | `<0\|1>` | *(USB CLI)* Enable/disable ESP-NOW Long Range (250 Kbps) PHY | `[NVS] Writing Long Range... OK` |
 | `ShowConfig`, `config` | *none* | *(USB CLI)* Print role, name, MAC, RF settings, and uptime | `[CONFIG] Role: ...` |
 | `FactoryReset` | *none* | *(USB CLI)* Erase `mesh_cfg` NVS namespace and reboot | `[NVS] Reverted to factory defaults` |
+| `help`, `?` | *none* | *(USB CLI)* Display NVS Workbench provisioning and RF configuration help banner | `[NVS WORKBENCH COMMANDS]...` |
 
 ### 7.2 PWM Subsystem (Servos & RGB LED Fading)
 | Command | Parameters | Description | Response / Event |
@@ -563,8 +622,8 @@ All commands can be sent over the air from the Coordinator Hub (`<TargetNode> <C
 ### 7.3 DC Motor Driver (`motor_driver`)
 | Command | Parameters | Description | Response / Event |
 | :--- | :--- | :--- | :--- |
-| `SetupMotorDriver` | `<mode> <freq>` | Init DC motor (`0`=DRV8833, `1`=Cytron 10C) at `freq` Hz | `GOT MOTORSPEED OK` / `[ACK]` |
-| `MotorSpeed` | `<speed>` | Set motor speed and direction (`-1000` to `+1000`) | `GOT MOTORSPEED OK` / `[ACK]` |
+| `SetupMotorDriver` | `<mode> <freq>` | Init DC motor (`0`=DRV8833, `1`=Cytron 10C) at `freq` Hz | `SETUP MOTOR OK` / `[ACK]` |
+| `MotorSpeed` | `<speed>` | Set motor speed and direction (`-1000` to `+1000`) | `GOT MOTORSPEED OK` / `[ACK]`, async `Motor At <speed>` when slew completes |
 | `MotorSlew` | `<rate>` | Set speed ramp rate (speed units / second) | `GOT MOTORSLEW OK` / `[ACK]` |
 | `GetRFlossThrottle` | *none* | Query current fail-safe RF throttle factor (`0.00` to `1.00`) | `RFlossThrottle <val>` |
 
@@ -626,6 +685,7 @@ Supports 5-wire unipolar steppers (e.g. Adafruit 28BYJ-48 small reduction steppe
 | `ReadADC<A0-A2>` (or `ReadADC <0-2>`) | *none* / `<0-2>` | Read instantaneous raw 12-bit ADC value on selected channel | `ADCval<ch> <val>` |
 | `ADCupperThresh<A0-A2>` | `<val>` | Set upper trigger threshold for hysteresis | `GOT ADCUPPERTHRESH<ch> OK` / `[ACK]` |
 | `ADCLowerThresh<A0-A2>` | `<val>` | Set lower trigger threshold for hysteresis | `GOT ADCLOWERTHRESH<ch> OK` / `[ACK]` |
+| `StreamADC` | `<0\|1>` | Enable/disable live raw ADC serial console logging | `ADC STREAM ON/OFF` |
 | `SetupGPIOhandler` | *none* | Start background GPIO state change detector | `SETUP GPIO OK` / `[ACK]` |
 | `ModeGPIOin` | `<gpio>` | Configure pin as digital input with pull-up | `GOT MODEIN OK` / `[ACK]` |
 | `ModeGPIOout` | `<gpio>` | Configure pin as digital output | `GOT MODEOUT OK` / `[ACK]` |
@@ -634,46 +694,53 @@ Supports 5-wire unipolar steppers (e.g. Adafruit 28BYJ-48 small reduction steppe
 | `SetGPIOval` | `<gpio> <val>` | Set digital output level (0 or 1) | `GOT SETGPIO OK` / `[ACK]` |
 | `ReadGPIO` | `<gpio>` | Query digital input level | `GPIO <pin> IS <0\|1>` |
 
-### 7.8 I2C Peripherals: Distance, Proximity, I/O Expander, OLED Display, 3-Axis Compass & Raw Bus Access
+### 7.8 I2C Peripherals: Distance, Proximity, I/O Expander, OLED Display, 3-Axis Compass, I2C Mux & Raw Bus Access
 | Command | Parameters | Description | Response / Event |
 | :--- | :--- | :--- | :--- |
-| `SetupCompass` | `[addr]` | Initialize QMC5883L 3-axis compass (default: 13 / `0x0D`) & start comparator task | `SETUP COMPASS OK` / `SETUP COMPASS FAIL` |
-| `GetCompass`, `ReadCompass` | *none* | Read instantaneous 3-axis magnetic field vector (X, Y, Z) | `COMPASS <x> <y> <z>` / `COMPASS NOT READY` |
-| `LowMag`, `HighMag` | `<val>` | Set signed 3-axis compass hysteresis thresholds `[LowMag, HighMag]` & `-[LowMag, HighMag]` (default `[1000, 2000]`; also supports `LowMag<X\|Y\|Z>`, `HighMag<X\|Y\|Z>`) | `GOT LOWMAG/HIGHMAG OK` / `[ACK]` (Events: `Mag<X\|Y\|Z> <1\|0\|-1> <X> <Y> <Z>`) |
-| `StreamCompass` | `<0\|1>` | Enable/disable live compass vector serial streaming | `COMPASS STREAM ON/OFF` |
-| `SetupExpand8` | `[addr]` | Initialize PCF8574 I/O expander instance ( up to 2 chips; default addr: 32 / `0x20`) | `SETUP EXPAND8 OK` / `FAIL` |
-| `wrExpand8` | `<bit> [val] [addr]` | Write bit 0–7 (val: 0 or 1, default 1) on active or `[addr]` chip | `EXPAND8 WR OK` / `FAIL` |
-| `rdExpand8` | `<bit> [addr]` | Read individual bit 0–7 on active or `[addr]` chip | `EXPAND8 <bit> IS <0\|1>` |
-| `setExpand8` | `<bit> [addr]` | Set bit 0–7 HIGH (1) on active or `[addr]` chip | `EXPAND8 WR OK` |
-| `clrExpand8` | `<bit> [addr]` | Clear bit 0–7 LOW (0) on active or `[addr]` chip | `EXPAND8 WR OK` |
+| `SetupCompass` | `[addr]` | Initialize QMC5883L 3-axis compass (default: 13 / `0x0D`) on main bus or active `I2Cmux` port & start comparator task | `SETUP COMPASS OK` / `SETUP COMPASS FAIL` |
+| `GetCompass`, `ReadCompass` | *none* | Read instantaneous 3-axis magnetic field vector (X, Y, Z) | `COMPASS[_mxN] <x> <y> <z>` / `COMPASS NOT READY` |
+| `LowMag`, `HighMag` | `<val>` | Set signed 3-axis compass hysteresis thresholds `[LowMag, HighMag]` & `-[LowMag, HighMag]` (default `[1000, 2000]`; also supports `LowMag<X\|Y\|Z>`, `HighMag<X\|Y\|Z>`) | `GOT LOWMAG/HIGHMAG OK` / `[ACK]` (Events: `Mag<X\|Y\|Z>[_mxN] <1\|0\|-1> <X> <Y> <Z>`) |
+| `StreamCompass` | `<0\|1>` | Enable/disable live compass vector serial streaming (every 300ms) | `COMPASS STREAM ON/OFF` |
+| `SetupExpand8` | `[addr]` | Initialize PCF8574 I/O expander instance (up to 8 chips; default addr: 32 / `0x20`) & start 250ms pin-change polling (`NewByte_<addr> <X>`) | `SETUP EXPAND8 OK` / `FAIL` |
+| `wrExpand8` | `<bit> [val] [addr]` (or `<addr> <bit> <val>`) | Write bit 0–7 (val: 0 or 1, default 1) on active or `[addr]` chip | `EXPAND8 WR OK` / `FAIL` |
+| `rdExpand8` | `<bit> [addr]` (or `<addr> <bit>`) | Read individual bit 0–7 on active or `[addr]` chip | `EXPAND8 <bit> IS <0\|1>` / `EXPAND8 RD FAIL` |
+| `setExpand8` | `<bit> [addr]` (or `<addr> <bit>`) | Set bit 0–7 HIGH (1) on active or `[addr]` chip | `EXPAND8 WR OK` / `FAIL` |
+| `clrExpand8` | `<bit> [addr]` (or `<addr> <bit>`) | Clear bit 0–7 LOW (0) on active or `[addr]` chip | `EXPAND8 WR OK` / `FAIL` |
 | `wrExpand8byte` | `<byte> [addr]` | Atomic 8-bit port write (0–255) on active or `[addr]` chip | `EXPAND8 WR OK` / `FAIL` |
-| `rdExpand8byte` | `[addr]` | Read full 8-bit port state on active or `[addr]` chip | `EXPAND8 BYTE 0x<HEX>` |
+| `rdExpand8byte` | `[addr]` | Read full 8-bit port state on active or `[addr]` chip | `EXPAND8 BYTE 0x<HEX>` / `EXPAND8 RD FAIL` |
 | `ClearDisp` | *none* | Clear SSD1306 display & reset line cursor to top | `CLEARDISP OK` / `CLEARDISP FAIL` |
 | `print` | `<size> <text>` | Render text in FreeMono (size: 9, 12, 18, 24) and advance line | `PRINT OK` / `PRINT FAIL` |
+| `PrintLines`, `Print2`, `Print3` | `<size> <l1>\|<l2>[\|<l3>...]` | Render up to 4 pipe-separated lines atomically in a single I2C flush | `PRINT OK` / `PRINT FAIL` |
+| `PrintAt` | `<line_idx> [size] <text>` | Render text at vertical line index (0, 1, 2) without clearing other lines | `PRINT OK` / `PRINT FAIL` |
 | `SetupDisp`, `SetupSSD1306` | `[addr]` | Initialize SSD1306 OLED display (default: 60 / `0x3C`) | `SETUP DISP OK` / `SETUP DISP FAIL` |
-| `SetupVL` | *none* | Init VL53L1X ToF sensor & start distance task | `SETUP VL OK` / `FAIL` |
-| `StreamVL` | `<0\|1>` | Enable/disable live distance streaming | `VL STREAM ON/OFF` |
+| `SetupI2Cmux` | `[addr]` | Initialize TCA9548A 8-channel I2C multiplexer (default: 112 / `0x70`) and disable all channels | `SETUP I2CMUX OK` / `SETUP I2CMUX FAIL` |
+| `SetI2Cmux` | `<X> [addr]` (or `<addr> <X>`) | Select downstream I2C channel `0–7` (`<0` or `>7` disconnects all channels) | `SET I2CMUX OK` / `SET I2CMUX FAIL` |
+| `SetI2CmuxMask` | `<mask> [addr]` (or `<addr> <mask>`) | Write raw 8-bit channel enable bitmask (`0x00`–`0xFF`) to TCA9548A | `SET I2CMUX OK` / `SET I2CMUX FAIL` |
+| `GetI2Cmux`, `ReadI2Cmux` | `[addr]` | Read active TCA9548A channel and 8-bit control register mask | `I2CMUX CH <X>` / `I2CMUX NONE` / `I2CMUX MASK 0x<HEX>` / `I2CMUX RD FAIL` |
+| `SetupVL` | *none* | Init VL53L1X ToF sensor on main bus or active `I2Cmux` port & start distance task | `SETUP VL OK` / `FAIL` (Events: `VL Object Detected[_mxN] <ts>` / `Removed[_mxN] <ts>`) |
+| `StreamVL` | `<0\|1>` | Enable/disable live distance streaming (every 500ms) | `VL STREAM ON/OFF` |
 | `VLUpperThresh` | `<mm>` | Set distance upper alert threshold | `GOT VLUPPERTHRESH OK` |
 | `VLLowerThresh` | `<mm>` | Set distance lower alert threshold | `GOT VLLOWERTHRESH OK` |
-| `SetupProximity` | *none* | Init APDS-9930 proximity sensor & start task | `SETUP PROX OK` / `FAIL` |
-| `ReadProx`, `ReadProximity` | *none* | Read instantaneous optical proximity level | `PROXval <val>` / `PROX NOT READY` |
-| `StreamProx` | `<0\|1>` | Enable/disable live proximity streaming | `PROX STREAM ON/OFF` |
-| `Npulses` | `<count>` | Set optical IR emitter pulse count | `GOT NPULSES OK` |
+| `SetupProximity` | *none* | Init APDS-9930 proximity sensor on main bus or active `I2Cmux` port & start task | `SETUP PROX OK` / `FAIL` (Events: `Car Detected[_mxN] <val>` / `Car removed[_mxN] <val>`) |
+| `ReadProx`, `ReadProximity` | *none* | Read instantaneous optical proximity level | `PROXval[_mxN] <val>` / `PROX NOT READY` |
+| `StreamProx` | `<0\|1>` | Enable/disable live proximity streaming (every 200ms) | `PROX STREAM ON/OFF` |
+| `Npulses` | `<count>` | Set optical IR emitter pulse count across all initialized APDS-9930 sensors | `GOT NPULSES OK` |
 | `ProxHighThrsh`, `ProxLowThrsh` | `<val>` | Set proximity upper and lower hysteresis alert thresholds (aliases: `UpperThresh`, `LowerThresh`) | `GOT PROXHIGHTHRSH/PROXLOWTHRSH OK` / `[ACK]` |
 | `scanI2C`, `I2Cscan` | *none* | Scan shared I2C bus (`0x08`–`0x77`) and list active slave addresses | `I2C SCAN: 0xXX(YY)...` / `I2C SCAN: NONE` |
 | `rawI2CchipADR` | `<7bit_addr>` | Select target I2C slave address | `I2C CHIP ADR OK` / `FAIL` |
 | `rawI2Cwr` | `<reg> <val>` | Write 1 byte to register over I2C | `I2C WR OK` / `FAIL` |
-| `rawI2Crd` | `<reg>` | Read 1 byte from register over I2C | `I2Cval <reg> <val>` / `FAIL` |
+| `rawI2Crd` | `<reg>` | Read 1 byte from register over I2C | `I2Cval <reg> <val>` / `I2C RD FAIL` |
 
 ### 7.9 Keyes KY-040 Rotary Encoder
 The Keyes KY-040 rotary encoder module features 3 signal connections: CLK (Phase A), DT (Phase B), and SW (integrated pushbutton switch).
-- **Quadrature State Machine:** Implements Ben Buxton's 7-state finite state machine algorithm with full-step (at resting 11 detent) and half-step modes. Naturally filters out mechanical switch bounce and EMI glitches.
-- **Debounced Pushbutton:** Hardware-timed falling-edge interrupt with 200ms debounce lockout.
+- **Quadrature State Machine:** Implements Ben Buxton's finite state machine algorithm with half-step mode (default, emitting events at both `00` and `11` detents) and full-step mode (at resting `11` detent). Naturally filters out mechanical switch bounce and EMI glitches.
+- **Debounced Pushbutton:** Edge-triggered (`GPIO_INTR_ANYEDGE`) interrupt with a 30ms settling delay in `rotary_task` that reports both button press (`RotaryButtonDown`) and release (`RotaryButtonUp`).
 - **Dynamic Pin Assignment:** Pins CLK, DT, SW are fully configurable via commands from the coordinator (`SetupRotary <clk> <dt> <sw>` or individual `SetRotary*` commands).
 - **Upstream Events:**
   - `RotaryCW`: Transmitted to the coordinator on every clockwise rotation step.
   - `RotaryCCW`: Transmitted to the coordinator on every counter-clockwise rotation step.
-  - `RotaryButtonPushed`: Transmitted to the coordinator on every pushbutton press.
+  - `RotaryButtonDown`: Transmitted to the coordinator when the pushbutton is pressed/held (`level == 0`).
+  - `RotaryButtonUp`: Transmitted to the coordinator when the pushbutton is released (`level == 1`).
 
 | Command | Parameters | Description | Response / Event |
 | :--- | :--- | :--- | :--- |
@@ -683,8 +750,8 @@ The Keyes KY-040 rotary encoder module features 3 signal connections: CLK (Phase
 | `SetRotaryDT` | `<pin>` | Configure encoder DT pin (Phase B) | `GOT ROTARYDT OK` / `[ACK]` |
 | `SetRotarySW` | `<pin>` | Configure encoder SW pushbutton pin | `GOT ROTARYSW OK` / `[ACK]` |
 | `SetRotaryInvert` | `<0\|1>` | Invert rotation direction in software (`1` = swap CW and CCW) | `GOT ROTARYINVERT OK` / `[ACK]` |
-| `SetRotaryHalfStep` | `<0\|1>` | Set step mode: `0` = Full-step (default, 11 detent), `1` = Half-step (00 and 11 detents) | `GOT ROTARYHALFSTEP OK` / `[ACK]` |
-| `MonitorRotary`, `StreamRotary` | `<0\|1>` | Enable/disable real-time 2-bit (CLK, DT) and SW state change streaming with microsecond timestamps | `MONITOR ROTARY ON` / `OFF` |
+| `SetRotaryHalfStep` | `<0\|1>` | Set step mode: `1` = Half-step (default, `00` and `11` detents), `0` = Full-step (`11` detent) | `GOT ROTARYHALFSTEP OK` / `[ACK]` |
+| `MonitorRotary`, `StreamRotary` | `<0\|1>` | Enable/disable real-time 2-bit (CLK, DT) and SW state change streaming (`RotaryBits <bits> clk=<c> dt=<d> sw=<s> +<delta>ms`) | `MONITOR ROTARY ON` / `OFF` |
 | `GetRotary`, `ReadRotary` | *none* | Read current position count, switch state, and configured pins | `ROTARY CLK=<c> DT=<d> SW=<s> POS=<pos> SW_LVL=<0\|1>` |
 | `ResetRotaryPos` | `[val]` | Reset position counter to `val` (default 0) | `GOT RESETROTARYPOS OK` / `[ACK]` |
 | `StopRotary`, `DeinitRotary` | *none* | Stop encoder monitoring and release GPIO resources | `STOP ROTARY OK` / `[ACK]` |
@@ -693,19 +760,17 @@ The Keyes KY-040 rotary encoder module features 3 signal connections: CLK (Phase
 
 ## 8. Memory & Partition Layout
 
-The firmware utilizes a custom partition table optimized for NVS configuration persistence (`mesh_cfg`), radio calibration, and application headroom:
+The firmware utilizes a custom partition table ([`partitions.csv`](file:///c:/Users/egape/PNPzigbee/partitions.csv)) optimized for NVS configuration persistence (`mesh_cfg`), radio calibration, and unified single-binary application headroom:
 
 ```csv
 # Name,       Type, SubType, Offset,   Size,    Flags
 nvs,          data, nvs,     0x9000,   0x6000,
 phy_init,     data, phy,     0xf000,   0x1000,
-factory,      app,  factory, 0x10000,  900K,
-zb_storage,   data, fat,     0xf1000,  16K,
-zb_fct,       data, fat,     0xf5000,  1K,
+factory,      app,  factory, 0x10000,  1800K,
 ```
-- **Application Binary Footprint:** ~600 KB (`0x92910` bytes).
-- **Available App Partition Headroom:** ~35% free space remaining in the 900 KB factory partition.
-- **Non-Volatile Storage (NVS):** Persists node role (`ROLE_COORDINATOR`, `ROLE_END_DEVICE`, `ROLE_UNPROVISIONED`), node name, RF channel, TX power, Long Range mode enable flag, and learned Coordinator MAC address across power cycles.
+- **Application Binary Footprint:** ~1.05 MB (`0x106dc0` bytes).
+- **Available App Partition Headroom:** ~42% free space (`0xbb240` bytes) remaining in the 1800 KB (`0x1c2000`) factory partition.
+- **Non-Volatile Storage (NVS):** Persists node role (`ROLE_COORDINATOR`, `ROLE_END_DEVICE`, `ROLE_UNPROVISIONED`), validated unique node name, RF channel (`[1, 14]`), validated TX power (`[8, 84]` quarter-dBm), Long Range mode enable flag, and learned Coordinator MAC address across power cycles.
 
 ---
 
@@ -1013,7 +1078,7 @@ Both the **Coordinator** and **End Nodes** utilize the Seeed Studio XIAO ESP32-C
 | | | `1` (HIGH) | **External U.FL Connector:** Connects 2.4 GHz RF trace to gold IPEX socket |
 
 > [!IMPORTANT]
-> Both the Coordinator firmware (`esp_zb_switch.c`) and Node firmware (`mesh_zigbee.c`) must explicitly configure `GPIO 3 = 0` and `GPIO 14 = 0` during the boot sequence and re-assert the levels immediately after `esp_wifi_start()`.
+> Both the Coordinator mode ([`serial_gateway.c`](file:///c:/Users/egape/PNPzigbee/main/serial_gateway.c)) and End-Device Node mode share the unified [`mesh_radio_init()`](file:///c:/Users/egape/PNPzigbee/main/mesh_zigbee.c#L299-L357) in [`mesh_zigbee.c`](file:///c:/Users/egape/PNPzigbee/main/mesh_zigbee.c), which explicitly configures `GPIO 3 = 0` and `GPIO 14 = 0` during the boot sequence and re-asserts the levels immediately after `esp_wifi_start()`.
 
 ---
 
@@ -1187,7 +1252,7 @@ flowchart LR
 
 2. **Transmission Rate Trade-off:**
    * Raw PHY bitrate drops from multi-megabit speeds down to **250 Kbps**.
-   * For streaming video or high-volume file transfers, this would be restrictive. However, for a 32-byte frame, transmission takes only $\approx 1.0\text{ ms}$, meaning perceived round-trip command latency remains essentially instantaneous (< 30 ms round-trip).
+   * For streaming video or high-volume file transfers, this would be restrictive. However, for a 138-byte `espnow_frame_t` payload (~180 bytes on air including 802.11 + ESP-NOW headers), physical frame transmission takes $\approx 5.8\text{ ms}$, keeping single-hop command and ACK exchange crisp and responsive.
 
 3. **Packet Air-Time & Retries:**
    * Unicast frames benefit from silicon-level hardware ACKs and automatic retries.
@@ -1197,29 +1262,38 @@ flowchart LR
 
 ### 12.3 Implementation Details
 
-Both the **Coordinator** ([`Coordinator/main/esp_zb_switch.c`](file:///c:/Users/egape/Coordinator/main/esp_zb_switch.c)) and **End Nodes** ([`PNPzigbee/main/mesh_zigbee.c`](file:///c:/Users/egape/PNPzigbee/main/mesh_zigbee.c)) execute identical radio initialization:
+Both the **Coordinator** and **End Nodes** execute the unified non-fatal [`mesh_radio_init()`](file:///c:/Users/egape/PNPzigbee/main/mesh_zigbee.c#L299-L357) sequence in [`main/mesh_zigbee.c`](file:///c:/Users/egape/PNPzigbee/main/mesh_zigbee.c):
 
 #### 1. Radio Initialization Sequence
 ```c
-// 1. Initialize Wi-Fi in Station mode
+// 1. Initialize Wi-Fi in Station mode (non-fatal ESP_RETURN_ON_ERROR)
 wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-ESP_ERROR_CHECK(esp_wifi_start());
+ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "esp_wifi_init failed");
+ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "esp_wifi_set_storage failed");
+ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "esp_wifi_set_mode failed");
+ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "esp_wifi_start failed");
 
-// 2. Lock to Channel 1
-ESP_ERROR_CHECK(esp_wifi_set_channel(ESPNOW_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE));
+// 2. Tune to NVS-configured channel (default: Channel 1)
+uint8_t chan = nvs_config_get_channel();
+ESP_RETURN_ON_ERROR(esp_wifi_set_channel(chan, WIFI_SECOND_CHAN_NONE), TAG, "esp_wifi_set_channel failed");
 
-// 3. Enable Long Range (LR) protocol
-ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, 
-    WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR));
+// 3. Enable Long Range (LR) protocol if configured in NVS (default: enabled)
+bool lr_mode = nvs_config_get_lr_mode();
+uint8_t proto_bitmap = WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N;
+if (lr_mode) {
+    proto_bitmap |= WIFI_PROTOCOL_LR;
+}
+ESP_RETURN_ON_ERROR(esp_wifi_set_protocol(WIFI_IF_STA, proto_bitmap), TAG, "esp_wifi_set_protocol failed");
 
-// 4. Force Maximum Transmitter Output Power (+20 dBm)
-ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(80)); // 80 * 0.25 dBm = 20 dBm
+// 4. Set validated NVS TX power [8..84] with fallback to +20.0 dBm (80 quarter-dBm)
+int8_t tx_pwr = nvs_config_get_tx_power();
+esp_err_t pwr_err = esp_wifi_set_max_tx_power(tx_pwr);
+if (pwr_err != ESP_OK) {
+    esp_wifi_set_max_tx_power(DEFAULT_TX_POWER_QDBM); // 80 * 0.25 dBm = 20 dBm
+}
 
 // 5. Disable power saving for zero-latency RX
-ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG, "esp_wifi_set_ps failed");
 ```
 
 #### 2. Per-Peer Rate Enforcement
@@ -1241,8 +1315,8 @@ esp_now_set_peer_rate_config(mac, &rate_cfg);
 
 Because Long Range mode uses Espressif-patented non-standard modulation:
 * **All Nodes Must Match:** The Coordinator Hub and every participating End Device spoke (`Kitchen`, `Garage`, `N1`, `N2`, `N3`) must have `WIFI_PROTOCOL_LR` active. If a device has standard-only protocols enabled, it cannot decode LR frames.
-* **Underlying Flatness vs. Star Architecture:** While the ESP-NOW MAC layer physically permits arbitrary peer-to-peer unicasts between any two devices, PNPzigbee intentionally organizes communication as a **Star Topology (Hub-and-Spoke)** centered on the Coordinator. All application commands originate from the Coordinator Hub to the End Device spokes, and all telemetry/ACKs flow back from the spokes directly to the Coordinator Hub. This intentional design harnesses the link budget advantage of ESP-NOW LR while retaining strict failure domain isolation, deterministic low latency (~20–30 ms), zero mesh broadcast routing overhead, and direct unmasked 1:1 LQI monitoring.
-* **Live Benchmark Verification:** In physical hardware test verification (`test_runner.py` mesh resilience tests), bidirectional command execution (`blink 1` -> `[ACK]`) across the Coordinator Hub and End Node spokes over the 250 Kbps LR link consistently passes in **20 to 29 ms** round-trip time with physical LQI values exceeding 200/255. Full network re-establishment following multi-node reboots completes in **1.3 to 2.0 seconds**.
+* **Underlying Flatness vs. Star Architecture:** While the ESP-NOW MAC layer physically permits arbitrary peer-to-peer unicasts between any two devices, PNPzigbee intentionally organizes communication as a **Star Topology (Hub-and-Spoke)** centered on the Coordinator. All application commands originate from the Coordinator Hub to the End Device spokes, and all telemetry/ACKs flow back from the spokes directly to the Coordinator Hub. This intentional design harnesses the link budget advantage of ESP-NOW LR while retaining strict failure domain isolation, deterministic single-hop latency, zero mesh broadcast routing overhead, and direct unmasked 1:1 LQI monitoring.
+* **Live Benchmark Verification:** In physical hardware test verification (`test_runner.py` mesh resilience tests), bidirectional command execution (`blink 1` -> `[ACK]`) across the Coordinator Hub and End Node spokes over the 250 Kbps LR link consistently passes with physical LQI values exceeding 200/255. Full network re-establishment following multi-node reboots completes in **1.3 to 2.0 seconds**.
 
 ---
 
@@ -1250,32 +1324,39 @@ Because Long Range mode uses Espressif-patented non-standard modulation:
 
 Automated regression and Hardware-in-the-Loop (HIL) verification across all actuator, sensor, display, and wireless resilience subsystems is integrated into [`ZigbeeTestRunner/test_runner.py`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py).
 
-### 13.1 PCF8574 `Expand8` Dual Alternating Bit Test (`[E]` / `--expand8`)
-The PCF8574 automated test ([`run_expand8_test()`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py#L1989)) exercises all eight quasi-bidirectional I/O pins over the wireless star network:
+### 13.1 Dual-Chip PCF8574 `Expand8` Main-Bus & Pin-Change Notification Test (`[E]` / `--expand8`)
+The dual-chip PCF8574 automated test ([`run_expand8_test()`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py#L3248)) validates **two PCF8574 I/O expanders on the main I2C bus (`0x20` and `0x21`)** along with **autonomous 250 ms pin-change reporting (`NewByte_<addr> <X>`)** over the wireless star network:
+- **Hardware Topology:**
+  - **Main I2C Bus (`GPIO 22` SDA / `GPIO 23` SCL):**
+    1. **8-Bit I/O Expander #1 (`PCF8574`)** directly on the main I2C bus at **`0x20` (`32` decimal)**.
+    2. **8-Bit I/O Expander #2 (`PCF8574`)** directly on the main I2C bus at **`0x21` (`33` decimal)**.
+  - **Physical Interconnect:** **`P1` (`bit 1`)** of `PCF8574 @ 0x20` (`32`) is physically wired to **`P2` (`bit 2`)** of `PCF8574 @ 0x21` (`33`).
 
 ```mermaid
 flowchart TD
-    START["1. Dispatch SetupExpand8 32"] --> VERIFY_SETUP{"Setup OK?"}
-    VERIFY_SETUP -- No --> FAIL["Test Failed: Init Error"]
-    VERIFY_SETUP -- Yes --> PATTERN_A["2. Write Pattern A (LSB=0):<br>[0, 1, 0, 1, 0, 1, 0, 1] (0xAA)"]
-    PATTERN_A --> READ_A["3. Read & Verify Bits 0..7"]
-    READ_A --> VERIFY_A{"All 8 Bits Match?"}
-    VERIFY_A -- No --> FAIL
-    VERIFY_A -- Yes --> PATTERN_B["4. Write Pattern B (LSB=1):<br>[1, 0, 1, 0, 1, 0, 1, 0] (0x55)"]
-    PATTERN_B --> READ_B["5. Read & Verify Bits 0..7"]
-    READ_B --> VERIFY_B{"All 8 Bits Match?"}
-    VERIFY_B -- No --> FAIL
-    VERIFY_B -- Yes --> PASS["Test Passed: 16/16 Bits Verified"]
+    START["0. Initialize SetupExpand8 32 (0x20) & SetupExpand8 33 (0x21)<br>Both start in 0xFF open-drain pull-up state"] --> PASS1["1. Pass 1: Write 0xAA to Chip 1 (32) & 0x55 to Chip 2 (33)<br>via wrExpand8 <bit> <val> <addr>, then Read & Verify all 16 bits"]
+    PASS1 --> PASS2["2. Pass 2: Invert Patterns (0x55 on Chip 1, 0xAA on Chip 2)<br>via wrExpand8 <bit> <val> <addr>, then Read & Verify all 16 bits"]
+    PASS2 --> PASS3_PREP["3. Pass 3 (Cross-Chip P1->P2 Link & NewByte_33 Verification):<br>Set Chip 2 (33) P2=1 (input) & Chip 1 (32) P1=0 -> Drain baseline NewByte"]
+    PASS3_PREP --> PASS3_HIGH["4. Toggle Chip 1 (0x20) P1: 0 -> 1 (wrExpand8 1 1 32)<br>Verify Coordinator receives 'NewByte_33 <X>' with bit 2 == 1"]
+    PASS3_HIGH --> PASS3_LOW["5. Toggle Chip 1 (0x20) P1: 1 -> 0 (wrExpand8 1 0 32)<br>Verify Coordinator receives 'NewByte_33 <X>' with bit 2 == 0"]
+    PASS3_LOW --> VERIFY{"Pass 1, Pass 2 & Pass 3<br>All Succeeded?"}
+    VERIFY -- No --> FAIL["Test Failed"]
+    VERIFY -- Yes --> PASS["Test Passed: Restore 0xFF on Both Chips"]
 ```
 
-1. **Explicit Initialization:** Transmits `<TargetName> SetupExpand8 <addr>` (defaults to address 32 / `0x20`) and awaits `SETUP EXPAND8 OK`.
-2. **Step 1: Pattern A Verification (LSB = 0):** Writes `[0, 1, 0, 1, 0, 1, 0, 1]` (`0xAA`) via `wrExpand8 <bit> <val>` and verifies each pin via `rdExpand8 <bit>`.
-3. **Step 2: Pattern B Inversion Verification (LSB = 1):** Writes `[1, 0, 1, 0, 1, 0, 1, 0]` (`0x55`) and verifies every bit toggled cleanly without crosstalk.
+1. **Initialization:** Initializes both main-bus expanders (`SetupExpand8 32` and `SetupExpand8 33`) so both chips start in the `0xFF` open-drain pull-up state and the 250 ms `expand8_poll_task` begins monitoring both addresses.
+2. **Pass 1 (`0xAA` on `0x20` & `0x55` on `0x21`):** Writes alternating bits (`0xAA` to `0x20`, `0x55` to `0x21`) bit-by-bit using `wrExpand8 <bit> <val> <addr>`, then reads back all 8 bits on each chip via `rdExpand8 <bit> <addr>`. (Because `P1` of `0x20` is wired to `P2` of `0x21`, open-drain wired-AND behavior on the linked pins is accounted for if one side drives LOW.)
+3. **Pass 2 (`0x55` on `0x20` & `0xAA` on `0x21`):** Writes the inverted bit patterns (`0x55` to `0x20`, `0xAA` to `0x21`) and verifies all 8 bits on both chips.
+4. **Pass 3 (Cross-Chip `P1 -> P2` Toggle & `NewByte_33` Upstream Notification):**
+   - Sets `P2` (`bit 2`) on `0x21` (`33`) HIGH (`1`, quasi-bidirectional input mode) and drives `P1` (`bit 1`) on `0x20` (`32`) LOW (`0`), waiting 0.6s to settle any baseline `NewByte` frames.
+   - **Step 3a (`0 -> 1`):** Toggles `0x20` `P1` from `0` to `1` (`wrExpand8 1 1 32`) and verifies that `0x21` (`33`) autonomously transmits **`NewByte_33 <X>`** to the Coordinator with bit 2 (`P2`) == `1` (`(X >> 2) & 1 == 1`).
+   - **Step 3b (`1 -> 0`):** Toggles `0x20` `P1` back from `1` to `0` (`wrExpand8 1 0 32`) and verifies that `0x21` (`33`) autonomously transmits **`NewByte_33 <X>`** to the Coordinator with bit 2 (`P2`) == `0` (`(X >> 2) & 1 == 0`).
+   - Restores both expanders (`32` and `33`) to `0xFF`.
 
 ---
 
 ### 13.2 Unipolar Stepper Speed & Accel/Decel 3-Pass Test (`[U]` / `--unipolar`)
-The unipolar stepper test ([`run_unipolar_stepper_test()`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py#L1357)) validates [`unipolarStep.c`](file:///c:/Users/egape/PNPzigbee/main/unipolarStep.c) on the `Garage` node driving an Adafruit 28BYJ-48 5-wire reduction stepper via 4 gate-level N-channel MOSFETs (Orange = Pin 1, Pink = Pin 2, Yellow = Pin 21, Blue = Pin 0):
+The unipolar stepper test ([`run_unipolar_stepper_test()`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py#L1403)) validates [`unipolarStep.c`](file:///c:/Users/egape/PNPzigbee/main/unipolarStep.c) on the `Garage` node driving an Adafruit 28BYJ-48 5-wire reduction stepper via 4 gate-level N-channel MOSFETs (Orange = Pin 1, Pink = Pin 2, Yellow = Pin 21, Blue = Pin 0):
 
 1. **Initialization:** Sends `Garage SetupUnipolar` (and optional `UniStepMode <0|1>`).
 2. **Pass 1 — Standard Speed (`10 ms` / step, No Ramp):**
@@ -1291,7 +1372,7 @@ The unipolar stepper test ([`run_unipolar_stepper_test()`](file:///c:/Users/egap
 ---
 
 ### 13.3 Garage 3-Color RGB LED PWM Fade Cycle Test (`[L]` / `--rgb`)
-The RGB PWM fade test ([`run_garage_rgb_fade_test()`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py#L958)) validates multi-channel hardware LEDC timer sharing and linear slew-rate ramping ([`pwm_driver.c`](file:///c:/Users/egape/PNPzigbee/main/pwm_driver.c)) on the `Garage` node:
+The RGB PWM fade test ([`run_garage_rgb_fade_test()`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py#L1004)) validates multi-channel hardware LEDC timer sharing and linear slew-rate ramping ([`pwm_driver.c`](file:///c:/Users/egape/PNPzigbee/main/pwm_driver.c)) on the `Garage` node:
 - **Hardware Mapping:** Common-Anode RGB LED tied to 3.3V with 1.2 kΩ series resistors on **Pin 18** (`PWM1`), **Pin 20** (`PWM2`), and **Pin 19** (`PWM3`) operating at **1000 Hz** (`duty 1023` = 0% OFF, `duty 0` = 100% Full ON).
 - **Slew Calculation:** For a configurable round-trip fade duration $T_{\text{fade}}$ (default `1.0s`, half-cycle $0.5\text{s}$), the test runner configures hardware slew rate $\text{slew} = \lfloor 1023 / (T_{\text{fade}} / 2) \rfloor = 2046\text{ counts/sec}$ via `pwmSlew1..3`.
 - **Continuous 4-Phase Fade Sequence (until `[ESC]` is pressed):**
@@ -1304,7 +1385,7 @@ The RGB PWM fade test ([`run_garage_rgb_fade_test()`](file:///c:/Users/egape/Zig
 ---
 
 ### 13.4 NeoPixel WS2812B Strand Step Test (`[V]` / `--neopixel`)
-The NeoPixel test ([`run_neopixel_test()`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py#L1205)) validates [`NeoPixel.c`](file:///c:/Users/egape/PNPzigbee/main/NeoPixel.c) on `Kitchen` (default **Pin 19** via 74HCT125 level shifter, configurable pixel count e.g. 7 or 16):
+The NeoPixel test ([`run_neopixel_test()`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py#L1251)) validates [`NeoPixel.c`](file:///c:/Users/egape/PNPzigbee/main/NeoPixel.c) on `Kitchen` (default **Pin 19** via 74HCT125 level shifter, configurable pixel count e.g. 7 or 16):
 - Initializes the strand with `Kitchen NeoGPIO <pin> <count>` and zeroes all LEDs via `NeoClear`.
 - Iterates sequentially through each pixel $p \in [0, N-1]$ using atomic single-packet commands with $0.5\text{s}$ step intervals:
   1. `NeoRed <p> 128` (Red ON) $\rightarrow$ wait $0.5\text{s}$ $\rightarrow$ `NeoOff <p>` (Red OFF) $\rightarrow$ wait $0.5\text{s}$
@@ -1315,25 +1396,25 @@ The NeoPixel test ([`run_neopixel_test()`](file:///c:/Users/egape/ZigbeeTestRunn
 ---
 
 ### 13.5 RFdropBlink Link-Loss 4 Hz Flasher Test (`[J]` / `--rfdrop`)
-The link-loss flasher test ([`run_rfdrop_blink_test()`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py)) validates fail-safe RF disconnect detection and autonomous 4 Hz indicator blinking on spoke nodes ([`GPIO_handler.c`](file:///c:/Users/egape/PNPzigbee/main/GPIO_handler.c) and [`discovery.c`](file:///c:/Users/egape/PNPzigbee/main/discovery.c)):
+The link-loss flasher test ([`run_rfdrop_blink_test()`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py#L1142)) validates fail-safe RF disconnect detection and autonomous 4 Hz indicator blinking on spoke nodes ([`GPIO_handler.c`](file:///c:/Users/egape/PNPzigbee/main/GPIO_handler.c) and [`discovery.c`](file:///c:/Users/egape/PNPzigbee/main/discovery.c)):
 - **Target Node & Pin:** `Garage` **Pin 18** (equipped with a workbench hardware LED).
 - **Physical Test Procedure:**
   1. **Arming:** Sends `Garage ModeGPIOout 18` followed by `Garage RFdropBlink 18`.
   2. **Port Closure & Coordinator Power Cut:** The test runner cleanly closes the local serial port (`COM11`) to prevent Windows serial handle invalidation when the Coordinator USB is unplugged. The user is instructed:
      > *"Pull/unplug the power or USB cable from the Coordinator now. Observe the Garage Pin 18 LED: it should begin flashing on/off 4 times per second (4 Hz)."*
   3. **Near-Field Isolation Rationale:** Physically severing Coordinator power is mandatory for bench testing; software RF switch toggling (`rf 1 0`) is insufficient when Xiao ESP32-C6 modules sit adjacent on the bench due to near-field PCB trace RF bleed-through.
-  4. **Visual Confirmation:** User verifies that within ~1.5–2.0s of coordinator power loss (timeout $2000\text{ ms}$ or 2 consecutive MAC transmission failures), Garage Pin 18 begins a deterministic 4 Hz square wave (125 ms HIGH / 125 ms LOW).
+  4. **Visual Confirmation:** User verifies that within ~6.0s of coordinator power loss (tolerating 3 missing heartbeats: timeout $6000\text{ ms}$ or 4 consecutive MAC transmission failures), Garage Pin 18 begins a deterministic 4 Hz square wave (125 ms HIGH / 125 ms LOW).
   5. **Restoration & Automatic Recovery:** User reconnects Coordinator power, presses Enter, the test runner re-opens `COM11`, issues `Garage PING`, and confirms that Garage Pin 18 immediately ceases blinking and latches LOW (`0`).
 
 ---
 
 ### 13.6 Cytron Motor RF-Loss Gentle Stop Fail-Safe Test (`[Y]` / `--rfloss`)
-The motor fail-safe test ([`run_cytron_rfloss_test()`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py)) validates that when communication with the Coordinator drops while running at full throttle, the Cytron motor driver ([`motor_driver.c`](file:///c:/Users/egape/PNPzigbee/main/motor_driver.c)) autonomously slews output down to zero power, providing a controlled, gentle stop rather than runaway motion:
+The motor fail-safe test ([`run_cytron_rfloss_test()`](file:///c:/Users/egape/ZigbeeTestRunner/test_runner.py#L2983)) validates that when communication with the Coordinator drops while running at full throttle, the Cytron motor driver ([`motor_driver.c`](file:///c:/Users/egape/PNPzigbee/main/motor_driver.c)) autonomously slews output down to zero power, providing a controlled, gentle stop rather than runaway motion:
 - **Test Parameters:** Target node (default: `Kitchen`), Pin 18 (PWM), Pin 20 (DIR).
 - **Physical Test Procedure:**
   1. **Full Power Initialization:** Sends `<target> SetupMotorDriver 1 5000` followed by `<target> MotorSpeed 1000` (100% forward power).
   2. **Coordinator Disconnect:** The test runner cleanly closes the serial port and prompts the user to unplug the Coordinator USB/power cable.
-  3. **Gentle Stop Observation:** User observes: within ~2 seconds of link loss, `PWM duty slews smoothly from commanded speed to 0 over 1 second. When reconnected, output gently ramps back up.`
+  3. **Gentle Stop Observation:** User observes: within ~6.0 seconds of link loss (after tolerating 3 missing heartbeats), `PWM duty slews smoothly from commanded speed to 0 over 1 second. When reconnected, output gently ramps back up.`
   4. **Reconnection & Slew-Up:** User reconnects Coordinator power, presses Enter, serial connection is restored, mesh link is re-established, and the motor output gently ramps back up from 0 to 100% power over 1 second.
   5. **Operator Query & Safety Cleanup:** The user is asked to confirm the observed operation (`[y/N]`). When the test ends, `<target> MotorSpeed 0` is sent to ensure the motor is stopped safely.
 
@@ -1342,17 +1423,24 @@ The motor fail-safe test ([`run_cytron_rfloss_test()`](file:///c:/Users/egape/Zi
 ### 13.7 Additional Automated Subsystem & Resilience Tests
 | Menu Key | CLI Flag | Target Subsystem & Verification Scope |
 | :--- | :--- | :--- |
-| **`[3]`** | `--blink` / `--blinkx` | **Multi-Node LED & Serial Blink (`run_multi_node_blink_test`):** Discovers all mesh endpoints (`GiveNetworkReport`), probes attached serial processors via UART auto-bridge (`ping` $\rightarrow$ `GotPing`), prints discovered topology table, and executes 3 sequential blinks across all endpoint onboard LEDs and attached DotStar RGB LEDs. (Merges previous tests 3 and 4). |
-| **`[J]`** | `--rfdrop` | **RFdropBlink Link-Loss Flasher (`run_rfdrop_blink_test`):** Arms Garage Pin 18, guides Coordinator power disconnect, verifies 4 Hz visual link loss indicator, and confirms automatic cessation upon reconnect. |
-| **`[Y]`** | `--rfloss` | **Cytron Motor RF-Loss Gentle Stop (`run_cytron_rfloss_test`):** Sets motor to 100% power, guides Coordinator power disconnect, verifies smooth 1.0s slew down to 0 power, verifies 1.0s gentle ramp back to 100% on reconnect, and confirms via operator Yes/No prompt. |
-| **`[O]` / `[C]`** | `--oled` / `--cleardisp` | **SSD1306 128x64 OLED (`run_ssd1306_test`):** Initializes `SetupDisp 60`, executes `ClearDisp`, and renders test strings across all 4 Adafruit GFX `FreeMono` font sizes (`9pt`, `12pt`, `18pt`, `24pt`). |
-| **`[K]`** | `--rotary` | **Keyes KY-040 Rotary Encoder (`run_rotary_encoder_test`):** Configures node `N2` pins (SW=19, DT=20, CLK=18), tracks cumulative count (floor=0, ceiling=8), updates Kitchen OLED line 1 on count changes, and toggles line 2 SW state (`ON`/`OFF`) on button push. |
+| **`[1]`** | `--all` | **Automated Regression Suite:** Runs non-interactive automated tests `[2], [5], [6], [8], [9], [A], [G], [B], [E]` in sequence and prints a consolidated pass/fail summary. |
+| **`[3]`** | `--blink` / `--blinkx` | **Multi-Node LED & Serial Blink (`run_multi_node_blink_test`):** Discovers all mesh endpoints (`GiveNetworkReport`), probes attached serial processors via UART auto-bridge (`ping` $\rightarrow$ `GotPing`), prints discovered topology table, and executes 3 sequential blinks across all endpoint onboard LEDs and attached DotStar RGB LEDs. |
+| **`[4]`** | `--i2c-latch` / `--latch` | **I2C Latched-Bus Fault & Recovery Test (`run_i2c_latched_bus_test`):** Verifies healthy baseline I2C read on `<target>`, prompts operator to short `SDA` (`GPIO 22`) to `GND`, triggers an I2C transaction, verifies reception of upstream `I2C BUS LATCHED: <DEVICE> (SDA=0 SCL=...)` alert at the Coordinator, and confirms automatic 9-clock hardware recovery once the short is removed. |
+| **`[8]` / `[9]`** | `--loopback` / `--schmitt` | **Closed-Loop DAC $\rightarrow$ ADC & Schmitt Trigger Ramp:** Drives analog voltages from `TXRXproto` DAC (`setDAC`) into ESP32-C6 `ADCA1` (GPIO 1) and verifies dynamic hysteresis threshold timing shifts (`ADCupperThreshA1`, `ADCLowerThreshA1`). |
+| **`[A]`** | `--adcpot` | **ADCpot 20-Detent Ramp (`run_adcpot_ramp_test`):** Configures `ADCpotA1` with `PotDetentA1 5` (5% steps = 20 detents across `[50mV, 3.3V]`), ramps the `TXRXproto` DAC `0 -> 1023 -> 0`, and verifies sequential `ADCpotA1 <0..20>` detent events. |
+| **`[G]` / `[B]`** | `--gpio` / `--bidi-gpio` | **Cross-Node & Bidirectional GPIO (`run_bidirectional_gpio_test`):** Verifies `Kitchen` Pin 21 $\leftrightarrow$ `Garage` Pin 17 digital transmission in both directions with high-impedance `ModeGPIOin` transitions on both ends before direction switching to prevent bus contention. |
+| **`[C]`** | `--cleardisp` / `--print-disp` | **SSD1306 128x64 OLED (`clear_display` / `print_display_line`):** Executes `ClearDisp` (or renders text strings in `9pt`, `12pt`, `18pt`, `24pt` `FreeMono` fonts). |
+| **`[K]`** | `--rotary` | **Keyes KY-040 Rotary Encoder (`run_rotary_encoder_test`):** Configures node `N2` pins (`SW=19, DT=20, CLK=18`), tracks cumulative count (`floor=0, ceiling=8`), updates Kitchen OLED line 1 on count changes, and updates line 2 SW state (`DOWN`/`UP`) on button press/release. |
+| **`[M]`** | `--menu` | **Multi-Level OLED Menu via N2 Rotary (`run_oled_menu_test`):** Uses `N2` Rotary (`[19, 20, 18]`) to navigate a 3-line `9pt` menu (`Print3`) on `Kitchen` OLED (`Motor`, `Lights`, `Sound`, `Status`, `RF stats`, `Config`, `Setup`, `About`). Selecting `RF stats` queries `GiveNetworkReport` for `{Kitchen, Garage, N2, N1}`, displaying LQI (`0..99`) or `XX GONE` for missing nodes. |
 | **`[Z]`** | `--rotary-raw` | **Rotary 2-Bit Raw Monitor (`run_rotary_raw_monitor_test`):** Live print-on-change streaming of raw quadrature bits `[CLK, DT]` and pushbutton SW state with delta millisecond timestamps to analyze Gray code transitions and detents. |
 | **`[Q]`** | `--get-compass` | **QMC5883L 3-Axis Compass (`run_compass_stream`):** Streams live `x,y,z` at 300 ms intervals until `[ESC]`. |
+| **`[F]`** | `--compass-hyst` / `--mag` | **QMC5883L 12-Threshold Signed Hysteresis (`run_compass_hysteresis_test`):** Guides a permanent magnet across X, Y, and Z axes in both polarities to verify all 12 signed threshold transitions (`Mag<X|Y|Z> <1|0|-1> <X> <Y> <Z>`). |
+| **`[D]`** | `--prox` | **APDS-9930 Dual-Port `I2Cmux` Proximity Hysteresis (`run_proximity_test`):** Initializes `SetupI2Cmux`, tests Port 0 (`SetI2Cmux 0` $\rightarrow$ `SetupProximity`) across `[200, 500]` and `[400, 800]` thresholds (`Car Detected_mx0` / `Car removed_mx0`), then switches to Port 1 (`SetI2Cmux 1` $\rightarrow$ `SetupProximity`) and verifies `Car Detected_mx1 <val>` when covered. |
 | **`[S]`** | `--servo` / `--pwm` | **Hobby Servo PWM Snap vs. Slew (`run_servo_pwm_test`):** Tests `SetupPWM1` on Pin 2 (50 Hz), comparing instant snap (`pwmSlew1 0` between `51` and `102`) against smooth gliding (`pwmSlew1 30`). |
-| **`[M]`** | `--cytron` / `--motor` | **Cytron 10C DC Motor (`run_cytron_motor_test`):** Tests Mode 1 (`SetupMotorDriver 1 5000` on Pin 18 PWM / Pin 20 DIR), 2s ramp to `+1000` (`MotorSlew 500`), 4s reversal ramp to `-1000`, 1s hold, and instant stop (`MotorSlew 0`, `MotorSpeed 0`). |
-| **`[8]` / `[9]`** | `--loopback` / `--schmitt` | **Closed-Loop DAC $\rightarrow$ ADC & Schmitt Trigger Ramp:** Drives analog voltages from `TXRXproto` DAC (`setDAC`) into ESP32-C6 `ADCA1` (GPIO 3) and verifies dynamic hysteresis threshold timing shifts (`ADCupperThreshA1`, `ADCLowerThreshA1`). |
-| **`[G]` / `[B]`** | `--gpio` / `--bidi-gpio` | **Cross-Node & Bidirectional GPIO (`run_bidirectional_gpio_test`):** Verifies `Kitchen` Pin 21 $\leftrightarrow$ `Garage` Pin 17 digital transmission in both directions with high-impedance `ModeGPIOin` transitions on both ends before direction switching to prevent bus contention. |
+| **`[I]`** | `--cytron` / `--motor` | **Cytron 10C DC Motor (`run_cytron_motor_test`):** Tests Mode 1 (`SetupMotorDriver 1 5000` on Pin 18 PWM / Pin 20 DIR), 2s ramp to `+1000` (`MotorSlew 500`), 4s reversal ramp to `-1000`, 1s hold, and instant stop (`MotorSlew 0`, `MotorSpeed 0`). |
+| **`[H]`** | `--bipolar` / `--stepper` | **Bipolar Stepper DRV8833 (`run_bipolar_stepper_test`):** Drives a 4-wire bipolar stepper on `Garage` (`Pins 1, 21, 2, 0`, 25 kHz ultrasonic PWM, 75% duty) through 180 Full-Steps and 360 Half-Steps forward and backward. |
+| **`[J]`** | `--rfdrop` | **RFdropBlink Link-Loss Flasher (`run_rfdrop_blink_test`):** Arms Garage Pin 18, guides Coordinator power disconnect, verifies 4 Hz visual link loss indicator after 3 missed heartbeats (~6s), and confirms automatic cessation upon reconnect. |
+| **`[Y]`** | `--rfloss` | **Cytron Motor RF-Loss Gentle Stop (`run_cytron_rfloss_test`):** Sets motor to 100% power, guides Coordinator power disconnect, verifies smooth 1.0s slew down to 0 power after 3 missed heartbeats (~6s), and verifies 1.0s gentle ramp back to 100% on reconnect. |
 | **`[W]`** | `--mesh` (`--mesh-sub1..3`) | **3-Stage Mesh Resilience Suite (`run_mesh_resilience_test`):** Automated reboot and route-healing verification across (1) all nodes (`Coordinator` + `Kitchen` + `Garage`), (2) `Garage` only, and (3) both `Kitchen` and `Garage`. |
 
 ---
@@ -1360,27 +1448,33 @@ The motor fail-safe test ([`run_cytron_rfloss_test()`](file:///c:/Users/egape/Zi
 ### 13.8 Test Runner CLI Quick Reference
 
 ```bash
-# Run full automated regression suite
+# Run full automated regression suite ([2],[5],[6],[8],[9],[A],[G],[B],[E])
 python test_runner.py -p COM11 -t Kitchen --all
 
-# Run RFdropBlink link-loss flasher test on Garage Pin 18
+# Run I2C Latched-Bus Fault & 9-Clock Recovery Test (Menu [4])
+python test_runner.py -p COM11 -t Kitchen --i2c-latch
+
+# Run Multi-Level OLED Menu via N2 Rotary Encoder (Menu [M])
+python test_runner.py -p COM11 -t Kitchen --menu
+
+# Run RFdropBlink link-loss flasher test on Garage Pin 18 (Menu [J])
 python test_runner.py -p COM11 -t Garage --rfdrop --rfdrop-pin 18
 
-# Run Cytron motor RF-loss gentle stop fail-safe test on Kitchen
+# Run Cytron motor RF-loss gentle stop fail-safe test on Kitchen (Menu [Y])
 python test_runner.py -p COM11 -t Kitchen --rfloss
 
-# Run Garage 3-color RGB LED PWM fade cycle test (Pins 18, 20, 19)
+# Run Garage 3-color RGB LED PWM fade cycle test (Pins 18, 20, 19) (Menu [L])
 python test_runner.py -p COM11 --rgb --rgb-duration 1.0
 
-# Run Unipolar Stepper 3-pass test (Standard, Half-Speed, Accel/Decel) on Garage
+# Run Unipolar Stepper 3-pass test (Menu [U]) or Bipolar Stepper DRV8833 test (Menu [H])
 python test_runner.py -p COM11 --unipolar --uni-steps 512 --uni-delay 10
+python test_runner.py -p COM11 --bipolar
 
-# Run NeoPixel WS2812B strand test on Kitchen Pin 19 (e.g. 7 pixels)
+# Run NeoPixel WS2812B strand test on Kitchen Pin 19 (e.g. 7 pixels) (Menu [V])
 python test_runner.py -p COM11 -t Kitchen --neopixel --neopixel-pin 19 --neopixel-count 7
 
-# Run PCF8574 Expand8, SSD1306 OLED, or QMC5883L Compass tests
-python test_runner.py -p COM11 -t Kitchen --expand8 --expand8-addr 32
-python test_runner.py -p COM11 -t Kitchen --oled --oled-addr 60
+# Run Dual-Chip PCF8574 Expand8 (0x20 & 0x21) or QMC5883L Compass tests
+python test_runner.py -p COM11 -t Kitchen --expand8 --expand8-addr 32 --expand8-addr2 33
 python test_runner.py -p COM11 -t Kitchen --compass --compass-addr 13
 
 # Launch interactive test menu
@@ -1455,6 +1549,6 @@ $$\text{Runtime} = \frac{\text{Battery Capacity}}{I_{\text{batt}}} = \frac{2400\
 Implementing power-saving sleep modes (such as periodic deep-sleep polling, 802.11 beacon synchronization, or slotted Aloha wakeups) would introduce substantial operational liabilities:
 * **Command Latency & Throttle Lag:** Sleep duty cycles introduce $100\text{--}500\,\text{ms}$ of response jitter, making analog throttle detents and emergency stops sluggish.
 * **Safety & RF-Loss Reaction:** Continuous reception guarantees fail-safe actuation (e.g. `RFdropBlink` link severance detection and gentle Cytron motor stop after tolerating 3 missing heartbeats within $\sim 6.0\,\text{s}$).
-* **Firmware Simplicity & Determinism:** Keeping the receiver active preserves deterministic sub-30ms round-trip execution, immediate LQI tracking, and unconstrained two-way communication without clock drift synchronization overhead.
+* **Firmware Simplicity & Determinism:** Keeping the receiver active preserves deterministic single-hop round-trip execution, immediate LQI tracking, and unconstrained two-way communication without clock drift synchronization overhead.
 
 With **5.4 days of continuous runtime** on a single charge, the continuous-listening architecture achieves the optimal balance of immediate physical responsiveness, safety, and system simplicity.

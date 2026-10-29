@@ -11,7 +11,8 @@ extern "C" {
 
 #define PCF8574_DEFAULT_ADDR   0x20
 #define PCF8574A_DEFAULT_ADDR  0x38
-#define EXPAND8_MAX_INSTANCES  2
+#define EXPAND8_MAX_INSTANCES  8
+#define EXPAND8_POLL_MS        250
 
 /**
  * @brief Initialize a PCF8574 8-bit I/O expander instance on the shared I2C bus.

@@ -3,50 +3,60 @@
  *
  * Purpose:
  *   Drives WS2812 / WS2812B addressable RGB LED strips using the ESP32-C6 GPSPI2 peripheral
- *   with hardware General Purpose DMA (GDMA). Streaming directly from DMA buffers guarantees
- *   zero CPU interrupt starvation and perfect bit timing, completely eliminating glitching
- *   and color latch errors even when the CPU runs at 80 MHz alongside Wi-Fi/ESP-NOW interrupts.
- *   Supports individual pixel color buffering in RAM with deferred batch update, bulk clearing,
- *   and immediate single-channel color presets.
+ *   with hardware General Purpose DMA (GDMA) at 2.5 MHz resolution. Streaming directly from DMA
+ *   buffers guarantees zero CPU interrupt starvation and exact bit timing, completely eliminating
+ *   glitching and color latch errors even when the CPU runs at 80 MHz alongside Wi-Fi/ESP-NOW
+ *   interrupts. Supports individual pixel color buffering in RAM (up to MAX_PIXELS = 100) with
+ *   deferred batch update, bulk clearing, and atomic single-command color presets.
  *
  * Supported Commands:
  *   NeoGPIO <gpio> [num_pixels]
  *     - gpio: GPIO pin connected to NeoPixel data input line (routed via GPIO Matrix to SPI MOSI).
  *     - num_pixels: Number of pixels in the strip (1..100, default 16).
  *     Initializes SPI+DMA driver and clears all pixels to black.
+ *     Replies "GOT NEOGPIO OK".
  *
  *   NeoRED <index> <val>
  *     - index: Pixel zero-based index (0..num_pixels-1).
  *     - val: Red brightness (0..255).
  *     Buffers red channel in RAM; requires 'NeoUpdate' to display.
+ *     Replies "GOT NEORED OK".
  *
  *   NeoGREEN <index> <val>
  *     - index: Pixel zero-based index (0..num_pixels-1).
  *     - val: Green brightness (0..255).
  *     Buffers green channel in RAM; requires 'NeoUpdate' to display.
+ *     Replies "GOT NEOGREEN OK".
  *
  *   NeoBLUE <index> <val>
  *     - index: Pixel zero-based index (0..num_pixels-1).
  *     - val: Blue brightness (0..255).
  *     Buffers blue channel in RAM; requires 'NeoUpdate' to display.
+ *     Replies "GOT NEOBLUE OK".
  *
  *   NeoUpdate
  *     Flushes the entire RAM buffer to the physical LED strip via SPI DMA.
+ *     Replies "GOT NEOUPDATE OK".
  *
  *   NeoOff <index>
  *     - index: Pixel zero-based index to turn OFF (0,0,0) and immediately update strip.
+ *     Replies "GOT NEOOFF OK".
  *
  *   NeoClear
  *     Clears all pixels in RAM and physically turns off the entire strip.
+ *     Replies "GOT NEOCLEAR OK".
  *
  *   NeoRed <index> <val> / NeoSetRed <index> <val>
  *     - Sets pixel <index> to RED=<val>, GREEN=0, BLUE=0 and immediately refreshes strip.
+ *     Replies "GOT NEORED OK".
  *
  *   NeoGreen <index> <val> / NeoSetGreen <index> <val>
  *     - Sets pixel <index> to RED=0, GREEN=<val>, BLUE=0 and immediately refreshes strip.
+ *     Replies "GOT NEOGREEN OK".
  *
  *   NeoBlue <index> <val> / NeoSetBlue <index> <val>
  *     - Sets pixel <index> to RED=0, GREEN=0, BLUE=<val> and immediately refreshes strip.
+ *     Replies "GOT NEOBLUE OK".
  */
 
 #include <stdio.h>

@@ -32,6 +32,7 @@ typedef struct
     char cmd[MESH_TEXT_LEN];
     int16_t value;
     int16_t value2; // <-- Added to support two-value commands
+    int16_t lqi;    // <-- Link Quality Indicator (0..255) of received frame
     char text[MESH_LINE_LEN];
 } mesh_msg_t;
 

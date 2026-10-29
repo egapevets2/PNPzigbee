@@ -2,31 +2,35 @@
  * GPIO_handler.c - General Purpose Input/Output Pin Manager & Monitor
  *
  * Purpose:
- *   Manages dynamic GPIO pin mode configuration, real-time edge-triggered input change
- *   detection, and fail-safe RF drop disconnect indication.
+ *   Manages dynamic GPIO pin mode configuration (up to N_GPIO = 6 monitored input slots),
+ *   real-time input change detection, and fail-safe RF drop disconnect indication.
  *   - Background polling task (gpio_poll_task) samples configured INPUT pins every 50ms
- *     and automatically pushes notifications upstream ("GPIO <num> CHANGED TO <state>")
+ *     and automatically pushes notifications upstream ("GPIO <num> CHANGED TO <0|1>")
  *     upon detecting logic transitions.
  *   - Disconnect monitor task (rfdrop_blink_task) flashes assigned RF drop blink pins at 4 Hz
- *     whenever communication with the coordinator is severed.
+ *     (125ms ON / 125ms OFF) whenever communication with the coordinator is severed.
  *
  * Supported Commands:
  *   ModeGPIOin <gpio>
  *     - gpio: GPIO pin number to configure as input with internal pull-up.
  *     Starts monitoring the pin and reporting state changes.
+ *     Replies "GOT MODEIN OK".
  *
  *   ModeGPIOout <gpio>
  *     - gpio: GPIO pin number to configure as standard push-pull digital output (initial 0).
+ *     Replies "GOT MODEOUT OK".
  *
  *   RFdropBlink <gpio> [0|1] / ModeRFdropBlink <gpio> [0|1]
  *     - gpio: GPIO pin number to assign as RF disconnect indicator (or negative to clear all).
- *     - 1 to enable, 0 to disable.
+ *     - 1 to enable (default), 0 to disable.
  *     When coordinator communication drops, flashes 4 times per second (4 Hz); stays low when healthy.
+ *     Replies "GOT RFDROPBLINK OK".
  *
  *   SetGPIOval <gpio> <val>
  *     - gpio: GPIO pin number.
  *     - val: Output level (0 or 1).
  *     Drives specified output pin (configures as output if not already set).
+ *     Replies "GOT SETGPIO OK".
  *
  *   ReadGPIO <gpio>
  *     - gpio: GPIO pin number to sample.

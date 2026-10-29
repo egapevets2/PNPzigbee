@@ -8,7 +8,7 @@
  *
  * Supported Commands:
  *   rawI2CchipADR <addr>
- *     - addr: 7-bit I2C target slave address (e.g. 21 or 0x15).
+ *     - addr: 7-bit I2C target slave address (1..127, e.g. 21 or 0x15).
  *     Sets the active target I2C address for subsequent raw read and write operations.
  *     Replies "I2C CHIP ADR OK" or "I2C CHIP ADR FAIL".
  *
@@ -16,12 +16,12 @@
  *     - reg: Target device 8-bit register address.
  *     - val: 8-bit value to write.
  *     Transmits 2-byte sequence [reg, val] to the current target chip address.
- *     Replies "I2C WR OK" or "I2C WR FAIL".
+ *     Replies "I2C WR OK", "I2C WR FAIL", or "ERR: NO I2C ADR SET".
  *
  *   rawI2Crd <reg>
  *     - reg: Target device 8-bit register address.
  *     Writes register address and reads back 1 data byte from the target chip address.
- *     Replies "I2Cval <reg> <val>".
+ *     Replies "I2Cval <reg> <val>", "I2C RD FAIL", or "ERR: NO I2C ADR SET".
  *
  *   scanI2C / I2Cscan
  *     Probes all 7-bit I2C addresses from 0x08 to 0x77 with a 20ms timeout.

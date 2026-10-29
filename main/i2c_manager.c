@@ -2,10 +2,14 @@
  * i2c_manager.c - Centralized Shared I2C Master Bus Resource Manager
  *
  * Purpose:
- *   Manages the lifecycle and shared access to the ESP32-C6 I2C master bus (ESP-IDF
- *   i2c_master driver) on SDA=GPIO 8 and SCL=GPIO 9 at 100 kHz. Peripherals dynamically
- *   attach and release device handles onto this shared bus (SSD1306, APDS9930, VL53L1X,
- *   Compass, PCF8574, I2Craw) without pin conflicts.
+ *   Manages on-demand initialization and shared access to the ESP32-C6 I2C master bus (ESP-IDF
+ *   i2c_master driver) on SDA=GPIO 22 and SCL=GPIO 23 at 100 kHz.
+ *   - Leaves GPIO 22 and GPIO 23 untouched at boot (zero-I2C pin leakage) until an I2C peripheral
+ *     is explicitly initialized by command (SSD1306, APDS9930, VL53L1X, Compass, PCF8574, TCA9548A, I2Craw).
+ *   - Provides physical bus health diagnostics (i2c_manager_check_latched_bus) that detect stuck-LOW
+ *     SDA/SCL lines, transmit rate-limited upstream alerts ("I2C BUS LATCHED: <DEVICE> (SDA=<0|1> SCL=<0|1>)")
+ *     to the Coordinator, and execute 9-clock SCL pulse + STOP bit hardware recovery (i2c_manager_recover_bus)
+ *     in-place without destroying existing device handles.
  *
  * Supported Commands:
  *   None (Internal Subsystem/Driver)
@@ -14,6 +18,10 @@
 #include "i2c_manager.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
+#include "esp_private/gpio.h"
+#include "esp_rom_gpio.h"
+#include "hal/i2c_periph.h"
+#include "soc/io_mux_reg.h"
 #include "esp_timer.h"
 #include "esp_rom_sys.h"
 #include "UpstreamQ.h"
@@ -72,31 +80,6 @@ i2c_master_bus_handle_t get_shared_i2c_bus(void)
     return s_i2c_bus_handle;
 }
 
-esp_err_t i2c_manager_deinit_bus(void)
-{
-    if (s_i2c_bus_handle == NULL) {
-        return ESP_OK;
-    }
-
-    ESP_LOGI(TAG, "Deleting shared I2C bus and releasing GPIO %d & %d to standard GPIO mode...",
-             I2C_DEFAULT_SDA_IO, I2C_DEFAULT_SCL_IO);
-
-    esp_err_t ret = i2c_del_master_bus(s_i2c_bus_handle);
-    s_i2c_bus_handle = NULL;
-
-    // Reset pins back to default unconfigured GPIO state
-    gpio_reset_pin(I2C_DEFAULT_SDA_IO);
-    gpio_reset_pin(I2C_DEFAULT_SCL_IO);
-
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to delete I2C bus: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    ESP_LOGI(TAG, "SDA/SCL pins released back to standard GPIO mode.");
-    return ESP_OK;
-}
-
 bool i2c_manager_is_bus_latched(int *sda_level, int *scl_level)
 {
     int sda = gpio_get_level(I2C_DEFAULT_SDA_IO);
@@ -104,6 +87,34 @@ bool i2c_manager_is_bus_latched(int *sda_level, int *scl_level)
     if (sda_level) *sda_level = sda;
     if (scl_level) *scl_level = scl;
     return (sda == 0 || scl == 0);
+}
+
+/*
+ * Re-binds SDA (GPIO 22) and SCL (GPIO 23) back to the I2C_NUM_0 peripheral
+ * signals in the ESP32-C6 GPIO matrix after manual open-drain bit-banging,
+ * without deleting s_i2c_bus_handle or invalidating attached device handles.
+ */
+static void s_restore_i2c_gpio_matrix(void)
+{
+    const int port_id = I2C_DEFAULT_NUM;
+
+    gpio_set_level(I2C_DEFAULT_SDA_IO, 1);
+    gpio_input_enable(I2C_DEFAULT_SDA_IO);
+    gpio_od_enable(I2C_DEFAULT_SDA_IO);
+    gpio_pullup_en(I2C_DEFAULT_SDA_IO);
+    gpio_pulldown_dis(I2C_DEFAULT_SDA_IO);
+    gpio_func_sel(I2C_DEFAULT_SDA_IO, PIN_FUNC_GPIO);
+    esp_rom_gpio_connect_out_signal(I2C_DEFAULT_SDA_IO, i2c_periph_signal[port_id].sda_out_sig, 0, 0);
+    esp_rom_gpio_connect_in_signal(I2C_DEFAULT_SDA_IO, i2c_periph_signal[port_id].sda_in_sig, 0);
+
+    gpio_set_level(I2C_DEFAULT_SCL_IO, 1);
+    gpio_input_enable(I2C_DEFAULT_SCL_IO);
+    gpio_od_enable(I2C_DEFAULT_SCL_IO);
+    gpio_pullup_en(I2C_DEFAULT_SCL_IO);
+    gpio_pulldown_dis(I2C_DEFAULT_SCL_IO);
+    gpio_func_sel(I2C_DEFAULT_SCL_IO, PIN_FUNC_GPIO);
+    esp_rom_gpio_connect_out_signal(I2C_DEFAULT_SCL_IO, i2c_periph_signal[port_id].scl_out_sig, 0, 0);
+    esp_rom_gpio_connect_in_signal(I2C_DEFAULT_SCL_IO, i2c_periph_signal[port_id].scl_in_sig, 0);
 }
 
 esp_err_t i2c_manager_recover_bus(void)
@@ -122,12 +133,10 @@ esp_err_t i2c_manager_recover_bus(void)
         }
     }
 
-    // If still latched or bus_reset wasn't enough, perform manual 9-clock recovery
-    ESP_LOGW(TAG, "Performing manual 9-clock SCL pulse recovery...");
-    if (s_i2c_bus_handle != NULL) {
-        i2c_del_master_bus(s_i2c_bus_handle);
-        s_i2c_bus_handle = NULL;
-    }
+    // If still latched or hardware bus_reset timed out, perform manual 9-clock recovery
+    // in-place WITHOUT calling i2c_del_master_bus() (which would fail while peripheral
+    // device handles are attached and orphan the bus).
+    ESP_LOGW(TAG, "Performing manual 9-clock SCL pulse recovery (preserving bus & device handles)...");
 
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << I2C_DEFAULT_SDA_IO) | (1ULL << I2C_DEFAULT_SCL_IO),
@@ -151,7 +160,7 @@ esp_err_t i2c_manager_recover_bus(void)
         }
     }
 
-    // Generate STOP condition
+    // Generate STOP condition (SDA LOW -> HIGH while SCL is HIGH)
     gpio_set_level(I2C_DEFAULT_SCL_IO, 0);
     esp_rom_delay_us(5);
     gpio_set_level(I2C_DEFAULT_SDA_IO, 0);
@@ -164,8 +173,13 @@ esp_err_t i2c_manager_recover_bus(void)
     int sda = gpio_get_level(I2C_DEFAULT_SDA_IO);
     int scl = gpio_get_level(I2C_DEFAULT_SCL_IO);
 
-    // Re-initialize master bus
-    i2c_manager_init_bus();
+    // Reconnect SDA/SCL pins back to I2C_NUM_0 in the GPIO matrix and reset hardware FSM
+    if (s_i2c_bus_handle != NULL) {
+        s_restore_i2c_gpio_matrix();
+        (void)i2c_master_bus_reset(s_i2c_bus_handle);
+    } else {
+        i2c_manager_init_bus();
+    }
 
     if (sda == 1 && scl == 1) {
         ESP_LOGI(TAG, "Manual 9-clock I2C recovery succeeded (SDA=1, SCL=1)");

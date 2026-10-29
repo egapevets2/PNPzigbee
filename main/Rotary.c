@@ -2,28 +2,29 @@
  * Rotary.c - Keyes KY-040 Rotary Encoder Driver Subsystem
  *
  * Purpose:
- *   Manages the Keyes KY-040 rotary encoder with integrated pushbutton.
- *   - Monitors CLK and DT lines using edge-triggered GPIO interrupts and a robust
- *     quadrature finite state machine (Ben Buxton algorithm) that inherently cancels
- *     contact bouncing and EMI spikes.
- *   - Monitors the SW momentary pushbutton with falling-edge interrupt and hardware-timed
- *     debounce filtering (200 ms).
+ *   Manages the Keyes KY-040 rotary encoder with integrated pushbutton (default pins: CLK=4, DT=5, SW=6).
+ *   - Monitors CLK and DT lines using any-edge GPIO interrupts and a noise-immune quadrature
+ *     finite state machine (Ben Buxton algorithm) that inherently cancels contact bounce and EMI spikes.
+ *   - Monitors the SW momentary pushbutton with an any-edge GPIO interrupt and 30 ms settling
+ *     debounce filter in rotary_task.
  *   - Dispatches upstream event messages to the Coordinator:
- *       "RotaryCW"            upon clockwise detent rotation
- *       "RotaryCCW"           upon counter-clockwise detent rotation
- *       "RotaryButtonPushed"  upon pressing the encoder center pushbutton
+ *       "RotaryCW"          upon clockwise detent rotation
+ *       "RotaryCCW"         upon counter-clockwise detent rotation
+ *       "RotaryButtonDown"  upon pressing the encoder pushbutton (level == 0)
+ *       "RotaryButtonUp"    upon releasing the encoder pushbutton (level == 1)
  *
  * Settable via Coordinator Commands:
- *   SetupRotary [clk] [dt] [sw]     - Configures pins (if given) and starts encoder
- *   SetRotaryPins <clk> <dt> <sw>   - Sets all 3 pins and starts encoder
- *   SetRotaryCLK <pin>              - Configures CLK pin
- *   SetRotaryDT <pin>               - Configures DT pin
- *   SetRotarySW <pin>               - Configures SW pushbutton pin
- *   SetRotaryInvert <0|1>           - Inverts CW/CCW direction in software
- *   SetRotaryHalfStep <0|1>         - 0 = full step (default, 11 detent), 1 = half step (00 and 11)
- *   GetRotary / ReadRotary          - Queries current position, button state, and pin assignments
- *   ResetRotaryPos [val]            - Resets cumulative position count (default 0)
- *   StopRotary / DeinitRotary       - Stops encoder and releases GPIOs
+ *   SetupRotary [clk] [dt] [sw]     - Configures pins (if given) and starts encoder ("SETUP ROTARY OK/FAIL")
+ *   SetRotaryPins <clk> <dt> <sw>   - Sets all 3 pins and starts encoder ("SET ROTARY PINS OK/FAIL")
+ *   SetRotaryCLK <pin>              - Configures CLK pin ("GOT ROTARYCLK OK")
+ *   SetRotaryDT <pin>               - Configures DT pin ("GOT ROTARYDT OK")
+ *   SetRotarySW <pin>               - Configures SW pushbutton pin ("GOT ROTARYSW OK")
+ *   SetRotaryInvert <0|1>           - Inverts CW/CCW direction in software ("GOT ROTARYINVERT OK")
+ *   SetRotaryHalfStep <0|1>         - 1 = half-step (default, 00 and 11 detents), 0 = full-step (11 detent)
+ *   MonitorRotary <0|1>             - Starts/stops 2ms raw bit monitor ("RotaryBits ...", alias: StreamRotary)
+ *   GetRotary / ReadRotary          - Replies "ROTARY CLK=<c> DT=<d> SW=<s> POS=<pos> SW_LVL=<0|1>"
+ *   ResetRotaryPos [val]            - Resets cumulative position count (default 0, "GOT RESETROTARYPOS OK")
+ *   StopRotary / DeinitRotary       - Stops encoder and releases GPIOs ("STOP ROTARY OK")
  */
 
 #include "Rotary.h"

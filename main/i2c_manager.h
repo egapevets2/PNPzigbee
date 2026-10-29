@@ -40,11 +40,6 @@ i2c_master_bus_handle_t i2c_manager_get_bus(void);
 i2c_master_bus_handle_t get_shared_i2c_bus(void);
 
 /**
- * @brief Releases the shared I2C bus and resets SCL/SDA pins back to standard GPIOs.
- */
-esp_err_t i2c_manager_deinit_bus(void);
-
-/**
  * @brief Checks if the shared I2C bus is currently physically latched (SDA or SCL stuck LOW).
  * @param[out] sda_level Pointer to store SDA line level (or NULL).
  * @param[out] scl_level Pointer to store SCL line level (or NULL).

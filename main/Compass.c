@@ -2,39 +2,46 @@
  * Compass.c - QMC5883L 3-Axis Digital Magnetometer Subsystem
  *
  * Purpose:
- *   Communicates with the QMC5883L magnetic compass sensor over the shared I2C bus
- *   (default 7-bit address 0x0D). Includes a continuous background task implementing
- *   tri-state window hysteresis (+1 above +HighMag, 0 within [-LowMag, +LowMag], -1 below -HighMag)
- *   per axis (X, Y, Z) with automatic upstream threshold change notifications ("COMPASS <axis> HIGH/NORMAL/LOW"),
- *   one-shot 3-axis queries, and continuous streaming.
+ *   Communicates with QMC5883L 3-axis magnetic sensors over the shared I2C bus (default 7-bit
+ *   address 0x0D / 13), supporting both a main-bus sensor and up to 8 multiplexed sensors
+ *   behind a TCA9548A I2Cmux (ports 0..7). Configures +/-8G full-scale range, 200 Hz ODR, and
+ *   512-sample digital filter (Control Register 1 = 0x1D). Includes a 50ms round-robin background
+ *   task (compass_task) implementing per-sensor, per-axis (X, Y, Z) signed 3-state window hysteresis
+ *   (+1 above +HighMag, 0 within [-LowMag, +LowMag], -1 below -HighMag) with upstream notifications
+ *   ("Mag<X|Y|Z>[_mxN] <1|0|-1> <X> <Y> <Z>"), one-shot 3-axis queries, and 300ms serial streaming.
  *
  * Supported Commands:
  *   SetupCompass [addr]
  *     - addr: 7-bit I2C address (default 0x0D / 13).
- *     Initializes QMC5883L sensor registers and starts background monitoring task.
+ *     Initializes QMC5883L sensor registers on the main bus (or active I2Cmux channel)
+ *     and starts the background monitoring task.
  *     Replies "SETUP COMPASS OK" or "SETUP COMPASS FAIL".
  *
  *   GetCompass / ReadCompass
  *     Reads current instantaneous magnetic field counts for X, Y, and Z axes.
- *     Replies "COMPASS <x> <y> <z>" (e.g. "COMPASS -245 1180 342").
+ *     Replies "COMPASS[_mxN] <x> <y> <z>" (e.g. "COMPASS -245 1180 342") or "COMPASS NOT READY".
  *
  *   StreamCompass <0|1>
- *     - 1 to enable, 0 to disable continuous streaming of readings every 100ms.
+ *     - 1 to enable, 0 to disable continuous serial streaming of readings every 300ms.
  *     Replies "COMPASS STREAM ON" or "COMPASS STREAM OFF".
  *
  *   LowMag <val>
  *     - val: Magnetic threshold count applied to all three axes X, Y, Z (default 1000).
  *     Sets positive (+val) and negative (-val) lower bound for hysteresis.
+ *     Replies "GOT LOWMAG OK".
  *
  *   HighMag <val>
  *     - val: Magnetic threshold count applied to all three axes X, Y, Z (default 2000).
  *     Sets positive (+val) and negative (-val) upper bound for hysteresis.
+ *     Replies "GOT HIGHMAG OK".
  *
  *   LowMagX <val> / LowMagY <val> / LowMagZ <val>
  *     - val: Magnetic threshold count applied specifically to the X, Y, or Z axis.
+ *     Replies "GOT LOWMAG<X|Y|Z> OK".
  *
  *   HighMagX <val> / HighMagY <val> / HighMagZ <val>
  *     - val: Magnetic threshold count applied specifically to the X, Y, or Z axis.
+ *     Replies "GOT HIGHMAG<X|Y|Z> OK".
  */
 
 #include <stdio.h>
@@ -50,6 +57,7 @@
 #include "mesh_zigbee.h"
 #include "mesh_serial.h"
 #include "i2c_manager.h"
+#include "I2Cmux.h"
 #include "Compass.h"
 
 static const char *TAG = "COMPASS";
@@ -77,10 +85,18 @@ volatile int16_t LowMag[3]  = {1000, 1000, 1000};
 volatile int16_t HighMag[3] = {2000, 2000, 2000};
 static bool g_stream_compass = false;
 
-// Comparator state per axis: -1 (below -HighMag), 0 (within [-LowMag, +LowMag]), +1 (above +HighMag)
-static volatile int8_t s_axis_state[3]    = {0, 0, 0};
-static volatile int8_t s_axis_reported[3] = {0, 0, 0};
-static volatile int16_t s_axis_last_snapshot[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+// Slot 0..7 = TCA9548A mux channels 0..7; Slot 8 = main I2C bus (non-muxed)
+#define COMPASS_MAIN_SLOT TCA9548A_NUM_CHANNELS
+#define COMPASS_TOTAL_SLOTS (TCA9548A_NUM_CHANNELS + 1)
+
+static volatile bool s_main_bus_active = false;
+static volatile uint8_t s_mux_channel_mask = 0;
+
+// Comparator state per slot & axis: -1 (below -HighMag), 0 (within [-LowMag, +LowMag]), +1 (above +HighMag)
+static volatile int8_t s_axis_state[COMPASS_TOTAL_SLOTS][3]    = {{0}};
+static volatile int8_t s_axis_reported[COMPASS_TOTAL_SLOTS][3] = {{0}};
+static volatile int16_t s_axis_last_snapshot[COMPASS_TOTAL_SLOTS][3][3] = {{{0}}};
+static uint8_t s_print_counter[COMPASS_TOTAL_SLOTS] = {0};
 
 bool compass_check_latched_bus(esp_err_t err)
 {
@@ -182,7 +198,24 @@ esp_err_t compass_init(uint8_t i2c_addr)
 
     if (s_compass_mutex) xSemaphoreGive(s_compass_mutex);
 
-    ESP_LOGI(TAG, "QMC5883L compass initialized successfully at 0x%02X (Continuous, 200Hz, 8G)", target_addr);
+    int8_t mux_ch = i2cmux_get_selected_channel();
+    int slot = (mux_ch >= 0 && mux_ch < TCA9548A_NUM_CHANNELS) ? mux_ch : COMPASS_MAIN_SLOT;
+    for (int i = 0; i < 3; i++) {
+        s_axis_state[slot][i] = 0;
+        s_axis_reported[slot][i] = 0;
+        s_axis_last_snapshot[slot][i][0] = 0;
+        s_axis_last_snapshot[slot][i][1] = 0;
+        s_axis_last_snapshot[slot][i][2] = 0;
+    }
+    s_print_counter[slot] = 0;
+    if (mux_ch >= 0 && mux_ch < TCA9548A_NUM_CHANNELS) {
+        s_mux_channel_mask |= (uint8_t)(1 << mux_ch);
+    } else {
+        s_main_bus_active = true;
+    }
+
+    ESP_LOGI(TAG, "QMC5883L compass initialized successfully at 0x%02X (mux_ch=%d, Continuous, 200Hz, 8G)",
+             target_addr, mux_ch);
     return ESP_OK;
 }
 
@@ -194,10 +227,7 @@ bool compass_is_initialized(void)
 esp_err_t compass_read_mag(int16_t *x, int16_t *y, int16_t *z)
 {
     if (s_dev_handle == NULL) {
-        esp_err_t err = compass_init(s_current_addr);
-        if (err != ESP_OK) {
-            return err;
-        }
+        return ESP_ERR_INVALID_STATE;
     }
 
     uint8_t reg = QMC5883L_REG_DATA_X_LSB;
@@ -249,78 +279,105 @@ static int8_t evaluate_axis_hysteresis(int8_t cur_state, int16_t val, int16_t lo
     return next_state;
 }
 
-void compass_task(void *arg)
+static void poll_single_compass_channel(int8_t mux_ch, int slot)
 {
     const char axis_names[3] = {'X', 'Y', 'Z'};
     int16_t vals[3] = {0, 0, 0};
-    uint8_t print_counter = 0;
     char localMsgBuf[64];
 
+    uint8_t saved_mask = 0;
+    bool mux_switched = false;
+    if (i2cmux_switch_and_lock(mux_ch, &saved_mask, &mux_switched) != ESP_OK) {
+        return;
+    }
+
+    esp_err_t ret = compass_read_mag(&vals[0], &vals[1], &vals[2]);
+    i2cmux_restore_and_unlock(saved_mask, mux_switched);
+
+    if (ret != ESP_OK) {
+        return;
+    }
+
+    char suffix[8] = "";
+    if (mux_ch >= 0) {
+        snprintf(suffix, sizeof(suffix), "_mx%d", mux_ch);
+    }
+
+    if (g_stream_compass) {
+        if (++s_print_counter[slot] >= 6) {
+            mesh_serial_writef("COMPASS%s: %d,%d,%d\r\n", suffix, vals[0], vals[1], vals[2]);
+            s_print_counter[slot] = 0;
+        }
+    }
+
+    for (int i = 0; i < 3; i++) {
+        int16_t l_mag = LowMag[i];
+        int16_t h_mag = HighMag[i];
+
+        // Step 1: Check return-to-zero hysteresis crossings (+LowMag or -LowMag) first
+        if (s_axis_state[slot][i] == 1 && vals[i] < l_mag) {
+            s_axis_state[slot][i] = 0;
+            s_axis_last_snapshot[slot][i][0] = vals[0];
+            s_axis_last_snapshot[slot][i][1] = vals[1];
+            s_axis_last_snapshot[slot][i][2] = vals[2];
+            ESP_LOGI(TAG, "Mag%c%s +LowMag crossing -> state=0 (val=%d < +%d) [%d %d %d]",
+                     axis_names[i], suffix, vals[i], l_mag, vals[0], vals[1], vals[2]);
+            if (s_axis_reported[slot][i] != 0) {
+                snprintf(localMsgBuf, sizeof(localMsgBuf), "Mag%c%s 0 %d %d %d",
+                         axis_names[i], suffix, vals[0], vals[1], vals[2]);
+                if (SendTheMessage(localMsgBuf)) {
+                    s_axis_reported[slot][i] = 0;
+                }
+            }
+        } else if (s_axis_state[slot][i] == -1 && vals[i] > -l_mag) {
+            s_axis_state[slot][i] = 0;
+            s_axis_last_snapshot[slot][i][0] = vals[0];
+            s_axis_last_snapshot[slot][i][1] = vals[1];
+            s_axis_last_snapshot[slot][i][2] = vals[2];
+            ESP_LOGI(TAG, "Mag%c%s -LowMag crossing -> state=0 (val=%d > -%d) [%d %d %d]",
+                     axis_names[i], suffix, vals[i], l_mag, vals[0], vals[1], vals[2]);
+            if (s_axis_reported[slot][i] != 0) {
+                snprintf(localMsgBuf, sizeof(localMsgBuf), "Mag%c%s 0 %d %d %d",
+                         axis_names[i], suffix, vals[0], vals[1], vals[2]);
+                if (SendTheMessage(localMsgBuf)) {
+                    s_axis_reported[slot][i] = 0;
+                }
+            }
+        }
+
+        // Step 2: Check outer threshold crossings (+HighMag or -HighMag) from state 0
+        int8_t next_state = evaluate_axis_hysteresis(s_axis_state[slot][i], vals[i], l_mag, h_mag);
+        if (next_state != s_axis_state[slot][i]) {
+            s_axis_state[slot][i] = next_state;
+            s_axis_last_snapshot[slot][i][0] = vals[0];
+            s_axis_last_snapshot[slot][i][1] = vals[1];
+            s_axis_last_snapshot[slot][i][2] = vals[2];
+            ESP_LOGI(TAG, "Mag%c%s HighMag crossing -> state=%d (val=%d, LowMag=%d, HighMag=%d) [%d %d %d]",
+                     axis_names[i], suffix, next_state, vals[i], l_mag, h_mag, vals[0], vals[1], vals[2]);
+        }
+
+        if (s_axis_reported[slot][i] != s_axis_state[slot][i]) {
+            snprintf(localMsgBuf, sizeof(localMsgBuf), "Mag%c%s %d %d %d %d",
+                     axis_names[i], suffix, s_axis_state[slot][i],
+                     s_axis_last_snapshot[slot][i][0], s_axis_last_snapshot[slot][i][1], s_axis_last_snapshot[slot][i][2]);
+            if (SendTheMessage(localMsgBuf)) {
+                s_axis_reported[slot][i] = s_axis_state[slot][i];
+            }
+        }
+    }
+}
+
+void compass_task(void *arg)
+{
     while (1) {
         if (compass_is_initialized() && i2c_manager_is_initialized()) {
-            if (compass_read_mag(&vals[0], &vals[1], &vals[2]) == ESP_OK) {
-                if (g_stream_compass) {
-                    if (++print_counter >= 6) {
-                        mesh_serial_writef("COMPASS: %d,%d,%d\r\n", vals[0], vals[1], vals[2]);
-                        print_counter = 0;
-                    }
-                }
-
-                for (int i = 0; i < 3; i++) {
-                    int16_t l_mag = LowMag[i];
-                    int16_t h_mag = HighMag[i];
-
-                    // Step 1: Check return-to-zero hysteresis crossings (+LowMag or -LowMag) first
-                    // so fast polarity reversals (+1 -> -1 or -1 -> +1) never skip reporting the LowMag crossing.
-                    if (s_axis_state[i] == 1 && vals[i] < l_mag) {
-                        s_axis_state[i] = 0;
-                        s_axis_last_snapshot[i][0] = vals[0];
-                        s_axis_last_snapshot[i][1] = vals[1];
-                        s_axis_last_snapshot[i][2] = vals[2];
-                        ESP_LOGI(TAG, "Mag%c +LowMag crossing -> state=0 (val=%d < +%d) [%d %d %d]",
-                                 axis_names[i], vals[i], l_mag, vals[0], vals[1], vals[2]);
-                        if (s_axis_reported[i] != 0) {
-                            snprintf(localMsgBuf, sizeof(localMsgBuf), "Mag%c 0 %d %d %d",
-                                     axis_names[i], vals[0], vals[1], vals[2]);
-                            if (SendTheMessage(localMsgBuf)) {
-                                s_axis_reported[i] = 0;
-                            }
-                        }
-                    } else if (s_axis_state[i] == -1 && vals[i] > -l_mag) {
-                        s_axis_state[i] = 0;
-                        s_axis_last_snapshot[i][0] = vals[0];
-                        s_axis_last_snapshot[i][1] = vals[1];
-                        s_axis_last_snapshot[i][2] = vals[2];
-                        ESP_LOGI(TAG, "Mag%c -LowMag crossing -> state=0 (val=%d > -%d) [%d %d %d]",
-                                 axis_names[i], vals[i], l_mag, vals[0], vals[1], vals[2]);
-                        if (s_axis_reported[i] != 0) {
-                            snprintf(localMsgBuf, sizeof(localMsgBuf), "Mag%c 0 %d %d %d",
-                                     axis_names[i], vals[0], vals[1], vals[2]);
-                            if (SendTheMessage(localMsgBuf)) {
-                                s_axis_reported[i] = 0;
-                            }
-                        }
-                    }
-
-                    // Step 2: Check outer threshold crossings (+HighMag or -HighMag) from state 0
-                    int8_t next_state = evaluate_axis_hysteresis(s_axis_state[i], vals[i], l_mag, h_mag);
-                    if (next_state != s_axis_state[i]) {
-                        s_axis_state[i] = next_state;
-                        s_axis_last_snapshot[i][0] = vals[0];
-                        s_axis_last_snapshot[i][1] = vals[1];
-                        s_axis_last_snapshot[i][2] = vals[2];
-                        ESP_LOGI(TAG, "Mag%c HighMag crossing -> state=%d (val=%d, LowMag=%d, HighMag=%d) [%d %d %d]",
-                                 axis_names[i], next_state, vals[i], l_mag, h_mag, vals[0], vals[1], vals[2]);
-                    }
-
-                    if (s_axis_reported[i] != s_axis_state[i]) {
-                        snprintf(localMsgBuf, sizeof(localMsgBuf), "Mag%c %d %d %d %d",
-                                 axis_names[i], s_axis_state[i],
-                                 s_axis_last_snapshot[i][0], s_axis_last_snapshot[i][1], s_axis_last_snapshot[i][2]);
-                        if (SendTheMessage(localMsgBuf)) {
-                            s_axis_reported[i] = s_axis_state[i];
-                        }
-                    }
+            if (s_main_bus_active) {
+                poll_single_compass_channel(-1, COMPASS_MAIN_SLOT);
+            }
+            uint8_t mask = s_mux_channel_mask;
+            for (int ch = 0; ch < TCA9548A_NUM_CHANNELS; ch++) {
+                if (mask & (1 << ch)) {
+                    poll_single_compass_channel((int8_t)ch, ch);
                 }
             }
         }
@@ -350,14 +407,10 @@ bool compass_execute_cmd(const char *cmd, int16_t value, bool text_message)
 {
     if (strcasecmp(cmd, "SetupCompass") == 0) {
         uint8_t addr = (value > 0) ? (uint8_t)value : QMC5883L_DEFAULT_I2C_ADDR;
-        if (compass_init(addr) == ESP_OK) {
-            for (int i = 0; i < 3; i++) {
-                s_axis_state[i] = 0;
-                s_axis_reported[i] = 0;
-                s_axis_last_snapshot[i][0] = 0;
-                s_axis_last_snapshot[i][1] = 0;
-                s_axis_last_snapshot[i][2] = 0;
-            }
+        i2cmux_lock();
+        esp_err_t init_err = compass_init(addr);
+        i2cmux_unlock();
+        if (init_err == ESP_OK) {
             static bool s_task_created = false;
             if (!s_task_created) {
                 xTaskCreate(compass_task, "compass_task", 3072, NULL, 5, NULL);
@@ -372,9 +425,18 @@ bool compass_execute_cmd(const char *cmd, int16_t value, bool text_message)
     }
     else if (strcasecmp(cmd, "GetCompass") == 0 || strcasecmp(cmd, "ReadCompass") == 0) {
         int16_t x = 0, y = 0, z = 0;
-        if (compass_read_mag(&x, &y, &z) == ESP_OK) {
+        i2cmux_lock();
+        int8_t mux_ch = i2cmux_get_selected_channel();
+        esp_err_t rd_err = compass_read_mag(&x, &y, &z);
+        i2cmux_unlock();
+
+        if (rd_err == ESP_OK) {
+            char suffix[8] = "";
+            if (mux_ch >= 0) {
+                snprintf(suffix, sizeof(suffix), "_mx%d", mux_ch);
+            }
             char reply[48];
-            snprintf(reply, sizeof(reply), "COMPASS %d %d %d", x, y, z);
+            snprintf(reply, sizeof(reply), "COMPASS%s %d %d %d", suffix, x, y, z);
             mesh_zigbee_send_text(reply);
         } else {
             mesh_zigbee_send_text("COMPASS NOT READY");

@@ -3,29 +3,33 @@
  *
  * Purpose:
  *   Manages persistent non-volatile configuration parameters stored in the 'mesh_cfg'
- *   NVS partition, including device role, logical node name, RF channel, coordinator MAC,
- *   TX output power, and 802.11 Long-Range PHY mode. Also implements the interactive
- *   serial workbench provisioning console.
+ *   NVS partition, including device role (ROLE_COORDINATOR, ROLE_END_DEVICE, ROLE_UNPROVISIONED),
+ *   validated logical node name, RF channel, learned coordinator MAC, TX output power,
+ *   and 802.11 Long-Range PHY mode. Also implements the interactive USB serial workbench
+ *   provisioning console.
  *
  * Supported Commands (Workbench Console):
  *   ShowConfig / config
- *     Displays current configuration table including role, name, channel, coordinator MAC,
- *     TX power, and Long-Range PHY mode.
+ *     Displays current configuration table including role, name, MAC, channel, coordinator MAC,
+ *     TX power, Long-Range PHY mode, and uptime.
  *
  *   SetRole <Coordinator | EndDevice <NodeName> | Unprovisioned>
- *     Sets node role and identity, commits to NVS, and schedules device reboot after 1 second.
+ *     Sets node role and identity (EndDevice requires a valid unique <NodeName>), commits to NVS,
+ *     and schedules device reboot after 1 second.
  *
  *   SetName <NewName>
- *     Assigns a persistent logical node name (up to 16 characters).
+ *     Assigns a persistent logical node name (2..17 chars, no spaces/delimiters; rejects reserved
+ *     placeholder names such as 'Node', 'Unassigned', or 'default').
  *
  *   SetChannel <1-14>
- *     Sets the fixed 2.4GHz Wi-Fi / ESP-NOW channel (1..14).
+ *     Sets and immediately tunes the fixed 2.4GHz Wi-Fi / ESP-NOW channel (1..14).
  *
  *   SetTxPower <qdbm>
- *     Sets Wi-Fi transmission power in quarter-dBm units (8..84, corresponding to +2 dBm to +21 dBm).
+ *     Sets Wi-Fi transmission power in quarter-dBm units (8..84, corresponding to +2.0 dBm to +21.0 dBm;
+ *     default 80 = +20.0 dBm).
  *
  *   SetLR <0|1> / SetLongRange <0|1>
- *     Enables (1) or disables (0) 802.11 Long-Range PHY mode (250 kbps DSSS).
+ *     Enables (1) or disables (0) Espressif 802.11 Long-Range PHY mode (250 kbps).
  *
  *   FactoryReset
  *     Erases the 'mesh_cfg' NVS namespace and restarts node in unprovisioned state.
@@ -308,6 +312,9 @@ esp_err_t nvs_config_get_coord_mac(uint8_t mac[6])
 esp_err_t nvs_config_set_coord_mac(const uint8_t mac[6])
 {
     if (!mac) return ESP_ERR_INVALID_ARG;
+    if (s_initialized && memcmp(s_config.coordinator_mac, mac, 6) == 0) {
+        return ESP_OK;
+    }
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open(MESH_CFG_NAMESPACE, NVS_READWRITE, &handle);

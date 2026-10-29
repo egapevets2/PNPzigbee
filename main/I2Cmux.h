@@ -99,6 +99,24 @@ esp_err_t i2cmux_get_mask_addr(uint8_t i2c_addr, uint8_t *mask);
 int8_t i2cmux_get_selected_channel(void);
 
 /**
+ * @brief Acquire / release the recursive I2Cmux lock to prevent background sensor tasks
+ *        and foreground commands from changing the active mux channel mid-transaction.
+ */
+void i2cmux_lock(void);
+void i2cmux_unlock(void);
+
+/**
+ * @brief Lock the I2Cmux, save the current channel mask, and switch to `channel` (0..7, or -1 for main bus).
+ *        Must be paired with `i2cmux_restore_and_unlock()` if it returns ESP_OK.
+ */
+esp_err_t i2cmux_switch_and_lock(int8_t channel, uint8_t *saved_mask_out, bool *mux_switched_out);
+
+/**
+ * @brief Restore the saved channel mask (if modified) and release the I2Cmux lock.
+ */
+void i2cmux_restore_and_unlock(uint8_t saved_mask, bool mux_switched);
+
+/**
  * @brief Latched-bus detector for TCA9548A multiplexer.
  *        Evaluates I2C transaction status and bus line states.
  *        If latched bus detected, sends upstream alert to coordinator and initiates recovery.

@@ -2,44 +2,54 @@
  * Expand8.c - PCF8574 / PCF8574A 8-Bit I2C GPIO Expander Driver
  *
  * Purpose:
- *   Drives Texas Instruments / NXP PCF8574 (0x20..0x27) and PCF8574A (0x38..0x3F)
- *   remote 8-bit I/O expanders over the shared I2C bus. Supports multiple concurrent expander
- *   instances, automatic address probing on the bus, individual bit read/write/set/clear,
- *   and full 8-bit byte read/write operations.
+ *   Drives up to EXPAND8_MAX_INSTANCES (8) Texas Instruments / NXP PCF8574 (0x20..0x27) and
+ *   PCF8574A (0x38..0x3F) quasi-bidirectional 8-bit I/O expanders over the shared I2C bus.
+ *   - Supports multiple concurrent expander instances on the main bus (e.g. 0x20/32 and 0x21/33)
+ *     as well as per-channel shadow port states behind a TCA9548A I2Cmux.
+ *   - Runs a 250ms background polling task (expand8_poll_task) that samples all initialized
+ *     expanders and automatically sends "NewByte_<addr> <X>" (where <addr> is the decimal I2C
+ *     address and <X> is the decimal port byte 0..255) upstream to the coordinator whenever any
+ *     pin state changes.
+ *   - Supports individual bit read/write/set/clear and full 8-bit byte read/write operations.
  *
  * Supported Commands:
  *   SetupExpand8 [addr]
- *     - addr: 7-bit I2C address (0x20..0x27 or 0x38..0x3F). If 0 or omitted, auto-probes the bus.
- *     Initializes PCF8574/A hardware device and caches instance handle.
+ *     - addr: 7-bit I2C address (default 32 / 0x20 if 0 or omitted).
+ *     Initializes PCF8574/A hardware to 0xFF (all pins high/input), caches instance handle,
+ *     and starts the 250ms pin-change polling task.
  *     Replies "SETUP EXPAND8 OK" or "SETUP EXPAND8 FAIL".
  *
- *   wrExpand8 <bit> <val> [addr]  /  wrExpand8 <addr> <bit> [val]
+ *   wrExpand8 <bit> [val] [addr]  /  wrExpand8 <addr> <bit> [val]
  *     - bit: Pin index (0..7).
- *     - val: Logic level (0 or 1).
- *     - addr: (Optional) Target expander I2C address if multiple chips present.
+ *     - val: Logic level (0 or 1, default 1).
+ *     - addr: (Optional) Target expander I2C address (8..119).
  *     Writes logic state to the specified expander pin.
+ *     Replies "EXPAND8 WR OK" or "EXPAND8 WR FAIL".
  *
  *   rdExpand8 <bit> [addr]  /  rdExpand8 <addr> <bit>
  *     - bit: Pin index (0..7).
  *     - addr: (Optional) Target expander I2C address.
  *     Reads logic state of the specified expander pin.
- *     Replies "EXPAND8 <bit> IS <val>" (0 or 1).
+ *     Replies "EXPAND8 <bit> IS <0|1>" or "EXPAND8 RD FAIL".
  *
- *   setExpand8 <bit> [addr]
+ *   setExpand8 <bit> [addr]  /  setExpand8 <addr> <bit>
  *     - bit: Pin index (0..7) to drive HIGH (1).
+ *     Replies "EXPAND8 WR OK" or "EXPAND8 WR FAIL".
  *
- *   clrExpand8 <bit> [addr]
+ *   clrExpand8 <bit> [addr]  /  clrExpand8 <addr> <bit>
  *     - bit: Pin index (0..7) to drive LOW (0).
+ *     Replies "EXPAND8 WR OK" or "EXPAND8 WR FAIL".
  *
  *   wrExpand8byte <val> [addr]
  *     - val: 8-bit port byte value (0..255 / 0x00..0xFF).
  *     - addr: (Optional) Target expander I2C address.
  *     Writes all 8 pins simultaneously.
+ *     Replies "EXPAND8 WR OK" or "EXPAND8 WR FAIL".
  *
  *   rdExpand8byte [addr]
  *     - addr: (Optional) Target expander I2C address.
  *     Reads full 8-bit port state.
- *     Replies "EXPAND8 BYTE 0x<HEX>".
+ *     Replies "EXPAND8 BYTE 0x<HEX>" or "EXPAND8 RD FAIL".
  */
 
 #include <stdio.h>
@@ -55,6 +65,7 @@
 #include "VL53L1X.h"        // For VL53L1X_I2C_ADDR
 #include "UpstreamQ.h"      // For SendTheMessage()
 #include "mesh_zigbee.h"    // For mesh_zigbee_send_text()
+#include "I2Cmux.h"         // For i2cmux_get_selected_channel()
 #include "Expand8.h"
 
 static const char *TAG = "EXPAND8";
@@ -62,12 +73,55 @@ static const char *TAG = "EXPAND8";
 typedef struct {
     bool initialized;
     uint8_t i2c_addr;
-    uint8_t port_state; // PCF8574 default power-on state is 0xFF (quasi-bidirectional inputs / weak pull-ups)
+    uint8_t port_state; // PCF8574 default power-on state is 0xFF (when I2Cmux is disabled / not active)
+    uint8_t last_sampled_val; // Last sampled 8-bit port value for 250ms change detection
+    uint8_t mux_port_state[TCA9548A_NUM_CHANNELS]; // Per-mux-channel shadow state for multiplexed expanders sharing an I2C address
     i2c_master_dev_handle_t dev_handle;
 } expand8_instance_t;
 
 static expand8_instance_t s_instances[EXPAND8_MAX_INSTANCES] = {0};
 static int s_active_idx = -1;
+static bool s_poll_task_started = false;
+
+static void expand8_poll_task(void *arg)
+{
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(EXPAND8_POLL_MS));
+
+        for (int i = 0; i < EXPAND8_MAX_INSTANCES; i++) {
+            if (s_instances[i].initialized && s_instances[i].dev_handle != NULL) {
+                uint8_t port_val = 0;
+                i2cmux_lock();
+                esp_err_t ret = i2c_master_receive(s_instances[i].dev_handle, &port_val, 1, pdMS_TO_TICKS(100));
+                i2cmux_unlock();
+
+                if (ret != ESP_OK) {
+                    expand8_check_latched_bus(ret);
+                    continue;
+                }
+                expand8_check_latched_bus(ESP_OK);
+
+                if (port_val != s_instances[i].last_sampled_val) {
+                    char msg[32];
+                    snprintf(msg, sizeof(msg), "NewByte_%u %u",
+                             (unsigned)s_instances[i].i2c_addr, (unsigned)port_val);
+                    if (SendTheMessage(msg)) {
+                        s_instances[i].last_sampled_val = port_val;
+                    }
+                }
+            }
+        }
+    }
+}
+
+static uint8_t *get_port_state_ptr(expand8_instance_t *inst)
+{
+    int8_t mux_ch = i2cmux_get_selected_channel();
+    if (mux_ch >= 0 && mux_ch < TCA9548A_NUM_CHANNELS) {
+        return &inst->mux_port_state[mux_ch];
+    }
+    return &inst->port_state;
+}
 
 bool expand8_check_latched_bus(esp_err_t err)
 {
@@ -137,7 +191,8 @@ esp_err_t expand8_init(uint8_t i2c_addr)
     }
 
     // Select slot: reuse existing slot for target_addr, or find a free slot, or replace non-active slot
-    int slot = find_instance_by_addr(target_addr);
+    int existing_slot = find_instance_by_addr(target_addr);
+    int slot = existing_slot;
     if (slot < 0) {
         for (int i = 0; i < EXPAND8_MAX_INSTANCES; i++) {
             if (!s_instances[i].initialized) {
@@ -154,40 +209,62 @@ esp_err_t expand8_init(uint8_t i2c_addr)
     }
 
     expand8_instance_t *inst = &s_instances[slot];
-    if (inst->dev_handle != NULL) {
-        i2c_master_bus_rm_device(inst->dev_handle);
-        inst->dev_handle = NULL;
-    }
+    esp_err_t ret = ESP_OK;
 
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = target_addr,
-        .scl_speed_hz = 100000,
-    };
+    if (existing_slot < 0 || inst->dev_handle == NULL) {
+        if (inst->dev_handle != NULL) {
+            i2c_master_bus_rm_device(inst->dev_handle);
+            inst->dev_handle = NULL;
+        }
 
-    esp_err_t ret = i2c_master_bus_add_device(bus, &dev_cfg, &inst->dev_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to add I2C device at 0x%02X: %s", target_addr, esp_err_to_name(ret));
-        inst->initialized = false;
-        return ret;
+        i2c_device_config_t dev_cfg = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = target_addr,
+            .scl_speed_hz = 100000,
+        };
+
+        ret = i2c_master_bus_add_device(bus, &dev_cfg, &inst->dev_handle);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to add I2C device at 0x%02X: %s", target_addr, esp_err_to_name(ret));
+            inst->initialized = false;
+            return ret;
+        }
+
+        inst->port_state = 0xFF;
+        memset(inst->mux_port_state, 0xFF, sizeof(inst->mux_port_state));
     }
 
     inst->i2c_addr = target_addr;
-    inst->port_state = 0xFF; // Set all bits high (inputs / idle)
-    inst->initialized = true;
-    s_active_idx = slot;
+    uint8_t *state_ptr = get_port_state_ptr(inst);
+    *state_ptr = 0xFF; // Set all bits high (inputs / idle) on current channel/bus
 
     // Synchronize initial port state to the PCF8574
-    ret = i2c_master_transmit(inst->dev_handle, &inst->port_state, 1, pdMS_TO_TICKS(100));
+    ret = i2c_master_transmit(inst->dev_handle, state_ptr, 1, pdMS_TO_TICKS(100));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to write initial port state to 0x%02X: %s", target_addr, esp_err_to_name(ret));
         expand8_check_latched_bus(ret);
         return ret;
     }
+
+    // Sample initial port state as baseline for 250ms change detection
+    uint8_t init_sample = 0xFF;
+    if (i2c_master_receive(inst->dev_handle, &init_sample, 1, pdMS_TO_TICKS(100)) == ESP_OK) {
+        inst->last_sampled_val = init_sample;
+    } else {
+        inst->last_sampled_val = *state_ptr;
+    }
     expand8_check_latched_bus(ESP_OK);
 
-    ESP_LOGI(TAG, "PCF8574 instance[%d] initialized at address 0x%02X (%d), port state 0x%02X",
-             slot, inst->i2c_addr, inst->i2c_addr, inst->port_state);
+    inst->initialized = true;
+    s_active_idx = slot;
+
+    if (!s_poll_task_started) {
+        s_poll_task_started = true;
+        xTaskCreate(expand8_poll_task, "expand8_poll_task", 3072, NULL, 5, NULL);
+    }
+
+    ESP_LOGI(TAG, "PCF8574 instance[%d] initialized at address 0x%02X (%d), mux_ch=%d, port state 0x%02X",
+             slot, inst->i2c_addr, inst->i2c_addr, i2cmux_get_selected_channel(), inst->last_sampled_val);
     return ESP_OK;
 }
 
@@ -223,23 +300,31 @@ static expand8_instance_t *resolve_instance(uint8_t i2c_addr)
 
 esp_err_t expand8_write_bit_addr(uint8_t i2c_addr, uint8_t bit, uint8_t val)
 {
+    i2cmux_lock();
     expand8_instance_t *inst = resolve_instance(i2c_addr);
     if (inst == NULL || inst->dev_handle == NULL) {
+        i2cmux_unlock();
         ESP_LOGE(TAG, "Expand8 not initialized for addr 0x%02X. Please run SetupExpand8 first.", i2c_addr);
         return ESP_ERR_INVALID_STATE;
     }
     if (bit > 7) {
+        i2cmux_unlock();
         ESP_LOGE(TAG, "Invalid bit index %d (must be 0-7)", bit);
         return ESP_ERR_INVALID_ARG;
     }
 
+    uint8_t *state_ptr = get_port_state_ptr(inst);
     if (val) {
-        inst->port_state |= (1 << bit);
+        *state_ptr |= (1 << bit);
     } else {
-        inst->port_state &= ~(1 << bit);
+        *state_ptr &= ~(1 << bit);
     }
 
-    esp_err_t ret = i2c_master_transmit(inst->dev_handle, &inst->port_state, 1, pdMS_TO_TICKS(100));
+    esp_err_t ret = i2c_master_transmit(inst->dev_handle, state_ptr, 1, pdMS_TO_TICKS(100));
+    int8_t mux_ch = i2cmux_get_selected_channel();
+    uint8_t cur_state = *state_ptr;
+    i2cmux_unlock();
+
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to write bit %d to 0x%02X: %s", bit, inst->i2c_addr, esp_err_to_name(ret));
         expand8_check_latched_bus(ret);
@@ -247,7 +332,8 @@ esp_err_t expand8_write_bit_addr(uint8_t i2c_addr, uint8_t bit, uint8_t val)
     }
     expand8_check_latched_bus(ESP_OK);
 
-    ESP_LOGI(TAG, "Expand8[0x%02X] bit %d set to %d (port=0x%02X)", inst->i2c_addr, bit, val ? 1 : 0, inst->port_state);
+    ESP_LOGI(TAG, "Expand8[0x%02X, ch=%d] bit %d set to %d (port=0x%02X)",
+             inst->i2c_addr, mux_ch, bit, val ? 1 : 0, cur_state);
     return ESP_OK;
 }
 
@@ -258,18 +344,24 @@ esp_err_t expand8_write_bit(uint8_t bit, uint8_t val)
 
 esp_err_t expand8_read_bit_addr(uint8_t i2c_addr, uint8_t bit, uint8_t *val)
 {
+    i2cmux_lock();
     expand8_instance_t *inst = resolve_instance(i2c_addr);
     if (inst == NULL || inst->dev_handle == NULL) {
+        i2cmux_unlock();
         ESP_LOGE(TAG, "Expand8 not initialized for addr 0x%02X. Please run SetupExpand8 first.", i2c_addr);
         return ESP_ERR_INVALID_STATE;
     }
     if (bit > 7 || val == NULL) {
+        i2cmux_unlock();
         ESP_LOGE(TAG, "Invalid argument (bit=%d)", bit);
         return ESP_ERR_INVALID_ARG;
     }
 
     uint8_t port_val = 0;
     esp_err_t ret = i2c_master_receive(inst->dev_handle, &port_val, 1, pdMS_TO_TICKS(100));
+    int8_t mux_ch = i2cmux_get_selected_channel();
+    i2cmux_unlock();
+
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to read port from 0x%02X: %s", inst->i2c_addr, esp_err_to_name(ret));
         expand8_check_latched_bus(ret);
@@ -278,7 +370,8 @@ esp_err_t expand8_read_bit_addr(uint8_t i2c_addr, uint8_t bit, uint8_t *val)
     expand8_check_latched_bus(ESP_OK);
 
     *val = (port_val >> bit) & 0x01;
-    ESP_LOGI(TAG, "Expand8[0x%02X] read bit %d = %d (port=0x%02X)", inst->i2c_addr, bit, *val, port_val);
+    ESP_LOGI(TAG, "Expand8[0x%02X, ch=%d] read bit %d = %d (port=0x%02X)",
+             inst->i2c_addr, mux_ch, bit, *val, port_val);
     return ESP_OK;
 }
 
@@ -289,14 +382,20 @@ esp_err_t expand8_read_bit(uint8_t bit, uint8_t *val)
 
 esp_err_t expand8_write_port_addr(uint8_t i2c_addr, uint8_t port_val)
 {
+    i2cmux_lock();
     expand8_instance_t *inst = resolve_instance(i2c_addr);
     if (inst == NULL || inst->dev_handle == NULL) {
+        i2cmux_unlock();
         ESP_LOGE(TAG, "Expand8 not initialized for addr 0x%02X. Please run SetupExpand8 first.", i2c_addr);
         return ESP_ERR_INVALID_STATE;
     }
 
-    inst->port_state = port_val;
-    esp_err_t ret = i2c_master_transmit(inst->dev_handle, &inst->port_state, 1, pdMS_TO_TICKS(100));
+    uint8_t *state_ptr = get_port_state_ptr(inst);
+    *state_ptr = port_val;
+    esp_err_t ret = i2c_master_transmit(inst->dev_handle, state_ptr, 1, pdMS_TO_TICKS(100));
+    int8_t mux_ch = i2cmux_get_selected_channel();
+    i2cmux_unlock();
+
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to write port to 0x%02X: %s", inst->i2c_addr, esp_err_to_name(ret));
         expand8_check_latched_bus(ret);
@@ -304,7 +403,8 @@ esp_err_t expand8_write_port_addr(uint8_t i2c_addr, uint8_t port_val)
     }
     expand8_check_latched_bus(ESP_OK);
 
-    ESP_LOGI(TAG, "Expand8[0x%02X] port set to 0x%02X", inst->i2c_addr, inst->port_state);
+    ESP_LOGI(TAG, "Expand8[0x%02X, ch=%d] port set to 0x%02X",
+             inst->i2c_addr, mux_ch, port_val);
     return ESP_OK;
 }
 
@@ -315,14 +415,20 @@ esp_err_t expand8_write_port(uint8_t port_val)
 
 esp_err_t expand8_read_port_addr(uint8_t i2c_addr, uint8_t *port_val)
 {
+    i2cmux_lock();
     expand8_instance_t *inst = resolve_instance(i2c_addr);
     if (inst == NULL || inst->dev_handle == NULL) {
+        i2cmux_unlock();
         ESP_LOGE(TAG, "Expand8 not initialized for addr 0x%02X. Please run SetupExpand8 first.", i2c_addr);
         return ESP_ERR_INVALID_STATE;
     }
-    if (port_val == NULL) return ESP_ERR_INVALID_ARG;
+    if (port_val == NULL) {
+        i2cmux_unlock();
+        return ESP_ERR_INVALID_ARG;
+    }
 
     esp_err_t ret = i2c_master_receive(inst->dev_handle, port_val, 1, pdMS_TO_TICKS(100));
+    i2cmux_unlock();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to read port from 0x%02X: %s", inst->i2c_addr, esp_err_to_name(ret));
         expand8_check_latched_bus(ret);

@@ -32,13 +32,11 @@ static const char *TAG = "SERIAL_BRIDGE";
  * XIAO ESP32-C6 hardware UART bridge settings.
  *
  * This file is intentionally separate from mesh_serial.c.
- * mesh_serial.c remains the USB debug/monitor console.
+ * mesh_serial.c remains the USB-Serial/JTAG debug/monitor console.
  *
- * UART bridge:
- *   Zigbee coordinator text -> GPIO21 / D3 TX @ 9600 baud
- *   GPIO22 / D4 RX @ 9600 baud -> Zigbee coordinator text
- *
- * Avoid GPIO16/GPIO17 here because this setup reports them as console UART pins.
+ * UART1 bridge:
+ *   Coordinator text -> GPIO 17 (D6 TX) @ 115200 baud
+ *   GPIO 16 (D7 RX) @ 115200 baud -> Coordinator text
  */
 
 

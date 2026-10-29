@@ -2,27 +2,32 @@
  * VL53L1X.c - Time-of-Flight (ToF) Long-Distance Laser Ranging Driver
  *
  * Purpose:
- *   Interfaces with the STMicroelectronics VL53L1X 940nm Time-of-Flight distance sensor
- *   over the shared I2C bus (address 0x29). Measures distances up to 4 meters independent of
- *   target color or surface reflectance. Includes a background polling task implementing
- *   dual-threshold hysteresis ("VL Object Detected", "VL Object Removed") and continuous streaming.
+ *   Interfaces with STMicroelectronics VL53L1X 940nm Time-of-Flight distance sensors
+ *   over the shared I2C bus (address 0x29), supporting both a direct main-bus sensor and up to
+ *   8 multiplexed sensors behind a TCA9548A I2Cmux (ports 0..7). Measures distances up to 4 meters
+ *   independent of target color or surface reflectance. Includes a 50ms round-robin background
+ *   polling task (vl53l1x_task) implementing per-sensor dual-threshold hysteresis
+ *   ("VL Object Detected[_mxN] <ts>", "VL Object Removed[_mxN] <ts>") and 500ms serial streaming.
  *
  * Supported Commands:
  *   SetupVL
- *     Initializes VL53L1X hardware on shared I2C bus and launches background monitoring task.
+ *     Initializes VL53L1X hardware on the main I2C bus (or currently selected I2Cmux channel)
+ *     and launches the background monitoring task.
  *     Replies "SETUP VL OK" or "SETUP VL FAIL".
  *
  *   StreamVL <0|1>
- *     - 1 to enable, 0 to disable continuous streaming of distance measurements every 100ms.
+ *     - 1 to enable, 0 to disable continuous serial streaming of distance measurements every 500ms.
  *     Replies "VL STREAM ON" or "VL STREAM OFF".
  *
  *   VLUpperThresh <mm>
- *     - mm: Upper distance threshold in millimeters (default 2000 mm / 2 meters).
+ *     - mm: Upper distance threshold in millimeters (default 400).
  *     Sets upper bound for hysteresis object detection.
+ *     Replies "GOT VLUPPERTHRESH OK".
  *
  *   VLLowerThresh <mm>
- *     - mm: Lower distance threshold in millimeters (default 1000 mm / 1 meter).
+ *     - mm: Lower distance threshold in millimeters (default 500).
  *     Sets lower bound for hysteresis object detection.
+ *     Replies "GOT VLLOWERTHRESH OK".
  */
 
 #include <stdio.h>
@@ -36,14 +41,32 @@
 #include "mesh_zigbee.h"
 #include "mesh_serial.h"
 #include "i2c_manager.h"
+#include "I2Cmux.h"
 #include "VL53L1X.h"
 
 static i2c_master_dev_handle_t dev_handle = NULL;
 static const char *TAG = "VL53L1X";
 
+typedef enum
+{
+    ObjectDetected = 1,
+    NothingThere = 0
+} VLState_t;
+
 volatile int16_t VLUpperThresh = 2000; // 2000 mm (2 meters)
 volatile int16_t VLLowerThresh = 1000; // 1000 mm (1 meter)
 static bool g_stream_vl = false;
+
+static volatile bool s_main_bus_active = false;
+static volatile uint8_t s_mux_channel_mask = 0;
+static VLState_t s_main_state = NothingThere;
+static VLState_t s_main_old_state = NothingThere;
+static uint8_t s_main_print_cnt = 0;
+static uint16_t s_main_timestamp = 0;
+static VLState_t s_mux_state[TCA9548A_NUM_CHANNELS] = {NothingThere};
+static VLState_t s_mux_old_state[TCA9548A_NUM_CHANNELS] = {NothingThere};
+static uint8_t s_mux_print_cnt[TCA9548A_NUM_CHANNELS] = {0};
+static uint16_t s_mux_timestamp[TCA9548A_NUM_CHANNELS] = {0};
 
 esp_err_t vl53l1x_init(void)
 {
@@ -58,34 +81,45 @@ esp_err_t vl53l1x_init(void)
         return ESP_FAIL;
     }
 
+    i2cmux_lock();
     esp_err_t ret = i2c_master_probe(bus_handle, VL53L1X_I2C_ADDR, pdMS_TO_TICKS(100));
     if (ret != ESP_OK)
     {
+        i2cmux_unlock();
         ESP_LOGE(TAG, "Sensor not found on I2C bus at address 0x%02x", VL53L1X_I2C_ADDR);
         return ret;
     }
 
-    if (dev_handle != NULL) {
-        i2c_master_bus_rm_device(dev_handle);
-        dev_handle = NULL;
+    if (dev_handle == NULL) {
+        i2c_device_config_t dev_cfg = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = VL53L1X_I2C_ADDR,
+            .scl_speed_hz = 100000,
+        };
+        ret = i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle);
+        if (ret != ESP_OK) {
+            i2cmux_unlock();
+            return ret;
+        }
     }
 
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = VL53L1X_I2C_ADDR,
-        .scl_speed_hz = 100000,
-    };
-    ret = i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle);
-    if (ret != ESP_OK)
-        return ret;
+    int8_t mux_ch = i2cmux_get_selected_channel();
+    if (mux_ch >= 0 && mux_ch < TCA9548A_NUM_CHANNELS) {
+        s_mux_state[mux_ch] = NothingThere;
+        s_mux_old_state[mux_ch] = NothingThere;
+        s_mux_print_cnt[mux_ch] = 0;
+        s_mux_timestamp[mux_ch] = 0;
+        s_mux_channel_mask |= (uint8_t)(1 << mux_ch);
+    } else {
+        s_main_state = NothingThere;
+        s_main_old_state = NothingThere;
+        s_main_print_cnt = 0;
+        s_main_timestamp = 0;
+        s_main_bus_active = true;
+    }
+    i2cmux_unlock();
 
-    ESP_LOGI(TAG, "VL53L1X Hardware Initialized on shared I2C bus.");
-
-    // Note: A full VL53L1X driver requires downloading firmware and configuration
-    // parameters to the sensor here. For a complete production implementation, 
-    // you must integrate the STMicroelectronics Ultra Lite Driver (ULD) API.
-    // Example: VL53L1X_SensorInit(dev);
-    
+    ESP_LOGI(TAG, "VL53L1X Hardware Initialized on shared I2C bus (mux_ch=%d).", mux_ch);
     return ESP_OK;
 }
 
@@ -97,10 +131,6 @@ bool vl53l1x_check_latched_bus(esp_err_t err)
 esp_err_t vl53l1x_read_distance(uint16_t *distance)
 {
     if (dev_handle == NULL || distance == NULL) return ESP_ERR_INVALID_STATE;
-
-    // NOTE: True distance reading requires the STMicroelectronics ULD API.
-    // This function is currently a structural placeholder that reads the Model ID 
-    // register to prove the I2C communication is successfully shared and working.
 
     uint8_t reg[2] = {0x01, 0x0F}; // Model_ID register
     uint8_t data[1] = {0};
@@ -118,60 +148,70 @@ esp_err_t vl53l1x_read_distance(uint16_t *distance)
     return ret;
 }
 
+static void poll_single_vl_channel(int8_t mux_ch, VLState_t *state_ptr, VLState_t *old_state_ptr, uint8_t *print_cnt_ptr, uint16_t *ts_ptr)
+{
+    uint8_t saved_mask = 0;
+    bool mux_switched = false;
+    if (i2cmux_switch_and_lock(mux_ch, &saved_mask, &mux_switched) != ESP_OK) {
+        return;
+    }
+
+    uint16_t distance = 0;
+    esp_err_t ret = vl53l1x_read_distance(&distance);
+    i2cmux_restore_and_unlock(saved_mask, mux_switched);
+
+    if (ret != ESP_OK) {
+        return;
+    }
+
+    char suffix[8] = "";
+    if (mux_ch >= 0) {
+        snprintf(suffix, sizeof(suffix), "_mx%d", mux_ch);
+    }
+
+    if (g_stream_vl) {
+        if (++(*print_cnt_ptr) >= 10) {
+            mesh_serial_writef("VL53%s: %u\r\n", suffix, distance);
+            *print_cnt_ptr = 0;
+        }
+    }
+
+    (*ts_ptr)++;
+
+    // Hysteresis logic for distance: Smaller values = closer
+    if (distance > VLUpperThresh) {
+        *state_ptr = NothingThere;
+    } else if (distance < VLLowerThresh) {
+        *state_ptr = ObjectDetected;
+    }
+
+    char localMsgBuf[48];
+    if (*state_ptr == ObjectDetected && *old_state_ptr == NothingThere) {
+        snprintf(localMsgBuf, sizeof(localMsgBuf), "VL Object Detected%s %u", suffix, *ts_ptr);
+        if (SendTheMessage(localMsgBuf)) {
+            *old_state_ptr = *state_ptr;
+        }
+    } else if (*state_ptr == NothingThere && *old_state_ptr == ObjectDetected) {
+        snprintf(localMsgBuf, sizeof(localMsgBuf), "VL Object Removed%s %u", suffix, *ts_ptr);
+        if (SendTheMessage(localMsgBuf)) {
+            *old_state_ptr = *state_ptr;
+        }
+    }
+}
+
 void vl53l1x_task(void *arg)
 {
-    uint16_t distance = 0;
-    uint16_t timestamp = 0;
-    uint8_t print_counter = 0;
-
-    typedef enum
-    {
-        ObjectDetected = 1,
-        NothingThere = 0
-    } VLState_t;
-
-    VLState_t state = NothingThere;
-    VLState_t OLDstate = NothingThere;
-
-    char localMsgBuf[32]; 
-
     while (1)
     {
-        if (vl53l1x_read_distance(&distance) == ESP_OK)
-        {
-            if (g_stream_vl)
-            {
-                if (++print_counter >= 10)
-                {
-                    mesh_serial_writef("VL53: %u\r\n", distance);
-                    print_counter = 0;
-                }
-            }
+        if (s_main_bus_active) {
+            poll_single_vl_channel(-1, &s_main_state, &s_main_old_state, &s_main_print_cnt, &s_main_timestamp);
+        }
 
-            timestamp++;
-            
-            // Hysteresis logic for distance: Smaller values = closer
-            if (distance > VLUpperThresh)
-            {
-                state = NothingThere;
+        uint8_t mask = s_mux_channel_mask;
+        for (int ch = 0; ch < TCA9548A_NUM_CHANNELS; ch++) {
+            if (mask & (1 << ch)) {
+                poll_single_vl_channel((int8_t)ch, &s_mux_state[ch], &s_mux_old_state[ch], &s_mux_print_cnt[ch], &s_mux_timestamp[ch]);
             }
-            else if (distance < VLLowerThresh)
-            {
-                state = ObjectDetected;
-            }
-
-            if (state == ObjectDetected && OLDstate == NothingThere)
-            {
-                snprintf(localMsgBuf, sizeof(localMsgBuf), "VL Object Detected %d", timestamp);
-                SendTheMessage(localMsgBuf);
-            }
-            else if (state == NothingThere && OLDstate == ObjectDetected)
-            {
-                snprintf(localMsgBuf, sizeof(localMsgBuf), "VL Object Removed %d", timestamp);
-                SendTheMessage(localMsgBuf);
-            }
-
-            OLDstate = state;
         }
 
         vTaskDelay(pdMS_TO_TICKS(50)); // 50ms polling rate

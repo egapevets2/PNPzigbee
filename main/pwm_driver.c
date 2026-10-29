@@ -2,30 +2,35 @@
  * pwm_driver.c - Multi-Channel General Purpose PWM Subsystem
  *
  * Purpose:
- *   Provides up to 4 independent general-purpose PWM channels (pwm1..pwm4) using the ESP32-C6
- *   LEDC peripheral. Features on-demand resource allocation via ledc_manager, runtime PWM frequency
- *   configuration, dynamic GPIO pin assignment, and software slew-rate rate limiting (pwm_slew_task).
+ *   Provides up to 4 independent general-purpose 10-bit PWM channels (pwm1..pwm4, default pins:
+ *   GPIO 2, 21, 4, 5; default frequency: 50 Hz) using the ESP32-C6 LEDC peripheral. Features
+ *   on-demand resource allocation via ledc_manager, runtime PWM frequency configuration, dynamic
+ *   GPIO pin assignment, and 50 Hz (20ms) software slew-rate limiting (pwm_slew_task).
  *
  * Supported Commands:
  *   SetupPWM1 .. SetupPWM4
- *     Initializes specified PWM channel and requests hardware timer and channel from ledc_manager.
+ *     Initializes specified PWM channel and requests a 10-bit hardware timer and channel from ledc_manager.
  *     Replies "SETUP PWM<ch> OK".
  *
  *   pwm1 .. pwm4 <duty>
- *     - duty: Target PWM duty cycle (0..255).
- *     Sets commanded duty cycle; slews smoothly if a slew rate is active.
+ *     - duty: Target 10-bit PWM duty cycle (0..1023).
+ *     Sets commanded duty cycle; slews smoothly at 50 Hz if a slew rate is active.
+ *     Replies "GOT PWM<ch> OK".
  *
  *   pwmFreq1 .. pwmFreq4 <freq>
- *     - freq: Switching frequency in Hz (e.g. 50, 1000, 25000).
+ *     - freq: Switching frequency in Hz (e.g. 50, 1000, 25000; default 50 Hz).
  *     Reconfigures LEDC hardware timer frequency for the channel.
+ *     Replies "GOT PWMFREQ<ch> OK".
  *
  *   pwmSlew1 .. pwmSlew4 <rate>
  *     - rate: Slew rate in duty units per second (0 = instantaneous step).
  *     Sets maximum rate of duty cycle change.
+ *     Replies "GOT PWMSLEW<ch> OK".
  *
  *   pwmPin1 .. pwmPin4 <gpio>
- *     - gpio: Target GPIO pin number.
- *     Rebinds the LEDC channel output to the specified GPIO pin.
+ *     - gpio: Target GPIO pin number (defaults: 2, 21, 4, 5).
+ *     Rebinds the LEDC channel output to the specified GPIO pin (releasing the prior pin if active).
+ *     Replies "GOT PWMPIN<ch> OK".
  */
 
 #include "pwm_driver.h"
@@ -40,6 +45,7 @@
 
 #include "mesh_zigbee.h" 
 #include "ledc_manager.h" // <-- Include the new central resource manager
+#include "Stepper.h"
 
 static const char *TAG = "PWM_DRIVER";
 
@@ -103,6 +109,26 @@ static void pwm_slew_task(void *arg)
     }
 }
 
+void pwm_driver_deinit_all(void)
+{
+    for (int i = 0; i < NUM_PWM_CHANNELS; i++)
+    {
+        if (pwm_states[i].active)
+        {
+            pwm_states[i].active = false;
+            ledc_stop(LEDC_LOW_SPEED_MODE, pwm_states[i].channel_num, 0);
+            if (pwm_states[i].current_gpio >= 0) {
+                gpio_reset_pin(pwm_states[i].current_gpio);
+                gpio_pullup_dis(pwm_states[i].current_gpio);
+                gpio_pulldown_dis(pwm_states[i].current_gpio);
+            }
+            ledc_manager_free_channel(pwm_states[i].channel_num);
+            ledc_manager_free_timer(pwm_states[i].timer_num);
+        }
+    }
+    ESP_LOGI(TAG, "All active PWM channels deinitialized");
+}
+
 void pwm_driver_init(int channel)
 {
     if (channel < 1 || channel > NUM_PWM_CHANNELS) return;
@@ -110,6 +136,9 @@ void pwm_driver_init(int channel)
 
     // Do not re-allocate if already active
     if (pwm_states[idx].active) return;
+
+    // Cleanly release Bipolar Stepper LEDC resources if it was holding channels/timers
+    Stepper_Deinit();
 
     // 1. Request Hardware Resources from the Central Manager
     if (!ledc_manager_alloc_timer(pwm_states[idx].current_freq, &pwm_states[idx].timer_num))

@@ -2,10 +2,12 @@
  * Stepper.c - 4-Wire Bipolar Stepper Motor Driver Subsystem
  *
  * Purpose:
- *   Drives 4-wire bipolar stepper motors (A+, A-, B+, B- coils) using ESP32-C6 LEDC PWM channels
- *   allocated through ledc_manager. Supports full-step (4-step) and half-step (8-step) sequences,
- *   programmable step timing (msPerStep), active duty cycle current limiting (StepPWMduty),
- *   holding current (HoldPWM), and trapezoidal acceleration/deceleration step ramping.
+ *   Drives 4-wire bipolar stepper motors (A+, A-, B+, B- coils; default pins: Ap=1, An=21, Bp=2, Bn=0)
+ *   using 8-bit ESP32-C6 LEDC PWM channels allocated through ledc_manager at 25 kHz ultrasonic default.
+ *   Automatically calls UnipolarStep_Deinit() on initialization to prevent pin/LEDC conflicts.
+ *   Supports full-step (4-step) and half-step (8-step) sequences, programmable step timing (msPerStep),
+ *   active duty cycle current limiting (StepPWMduty), holding current (HoldPWM), and trapezoidal
+ *   acceleration/deceleration step ramping. Commands accept space-delimited or '=' syntax.
  *
  * Supported Commands:
  *   SetupStepper
@@ -14,38 +16,34 @@
  *
  *   Step <steps>
  *     - steps: Relative step count (positive = forward, negative = reverse).
- *     Commands stepper movement with acceleration and deceleration profiling.
+ *     Commands stepper movement with acceleration and deceleration profiling ("GOT STEP OK").
  *
  *   msPerStep <ms>
- *     - ms: Target step period in milliseconds.
+ *     - ms: Target step period in milliseconds (default 20, "GOT MSPERSTEP OK").
  *
  *   StepPWMduty <percent>
- *     - percent: Active coil PWM duty cycle percentage (0..100, default 25).
+ *     - percent: Active coil PWM duty cycle percentage (0..100, default 25, "GOT STEPPWMDUTY OK").
  *
  *   StepPWMfreq <freq>
- *     - freq: PWM switching frequency in Hz (default 25000).
+ *     - freq: PWM switching frequency in Hz (default 25000, "GOT STEPPWMFREQ OK").
  *
  *   HoldPWM <percent>
- *     - percent: Stationary holding duty cycle percentage (0..100, default 0).
+ *     - percent: Stationary holding duty cycle percentage (0..100, default 0, "GOT HOLDPWM OK").
  *
- *   Accel <steps>
- *     - steps: Number of acceleration ramp steps from 200ms down to target msPerStep.
+ *   Accel <steps> / Decel <steps>
+ *     - steps: Number of acceleration / deceleration ramp steps between 200ms and target msPerStep
+ *       ("GOT ACCEL OK" / "GOT DECEL OK").
  *
- *   Decel <steps>
- *     - steps: Number of deceleration ramp steps up to 200ms.
- *
- *   FullStep
- *     Configures 4-step sequence mode.
- *
- *   HalfStep
- *     Configures 8-step half-step sequence mode.
+ *   FullStep / HalfStep
+ *     Configures 4-step full-step ("GOT FULLSTEP OK") or 8-step half-step ("GOT HALFSTEP OK") mode.
  *
  *   ApGPIO <pin> / AnGPIO <pin> / BpGPIO <pin> / BnGPIO <pin>
- *     - pin: GPIO pin number for coil A+, A-, B+, or B-.
+ *     - pin: GPIO pin number for coil A+, A-, B+, or B- (defaults: 1, 21, 2, 0; "GOT <AP|AN|BP|BN>GPIO OK").
  */
 
 #include "Stepper.h"
 #include "unipolarStep.h"
+#include "pwm_driver.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/ledc.h"
@@ -86,6 +84,8 @@ static ledc_channel_t ap_channel_num;
 static ledc_channel_t an_channel_num;
 static ledc_channel_t bp_channel_num;
 static ledc_channel_t bn_channel_num;
+static int s_timer_alloc = -1;
+static int s_ch_alloc[4] = {-1, -1, -1, -1};
 static bool stepper_active = false;
 static bool channels_allocated = false;
 static TaskHandle_t s_stepper_task_handle = NULL;
@@ -206,16 +206,23 @@ static void stepper_task(void *arg) {
 
 static int bound_pins[4] = {-1, -1, -1, -1};
 
+static void reset_pin_clean(int pin) {
+    if (pin < 0) return;
+    gpio_reset_pin(pin);
+    gpio_pullup_dis(pin);
+    gpio_pulldown_dis(pin);
+}
+
 static void rebind_all_stepper_channels(void) {
     for (int i = 0; i < 4; i++) {
         if (bound_pins[i] >= 0) {
-            gpio_reset_pin(bound_pins[i]);
+            reset_pin_clean(bound_pins[i]);
         }
     }
-    if (ap_pin >= 0) gpio_reset_pin(ap_pin);
-    if (an_pin >= 0) gpio_reset_pin(an_pin);
-    if (bp_pin >= 0) gpio_reset_pin(bp_pin);
-    if (bn_pin >= 0) gpio_reset_pin(bn_pin);
+    reset_pin_clean(ap_pin);
+    reset_pin_clean(an_pin);
+    reset_pin_clean(bp_pin);
+    reset_pin_clean(bn_pin);
 
     configure_ledc_channel(ap_pin, ap_channel_num);
     configure_ledc_channel(an_pin, an_channel_num);
@@ -229,12 +236,17 @@ static void rebind_all_stepper_channels(void) {
 }
 
 void Stepper_Deinit(void) {
-    if (!stepper_active && s_stepper_task_handle == NULL) {
+    bool any_alloc = (s_timer_alloc >= 0) ||
+                     (s_ch_alloc[0] >= 0) || (s_ch_alloc[1] >= 0) ||
+                     (s_ch_alloc[2] >= 0) || (s_ch_alloc[3] >= 0);
+    if (!stepper_active && s_stepper_task_handle == NULL && !channels_allocated && !any_alloc) {
         return;
     }
 
     // Mute all duty outputs while still active
-    apply_step(0, 0);
+    if (stepper_active) {
+        apply_step(0, 0);
+    }
 
     stepper_active = false;
     target_steps = 0;
@@ -247,24 +259,39 @@ void Stepper_Deinit(void) {
         vTaskDelete(h);
     }
 
+    // Stop and free LEDC channels and timer back to ledc_manager
+    for (int i = 0; i < 4; i++) {
+        if (s_ch_alloc[i] >= 0) {
+            ledc_stop(LEDC_LOW_SPEED_MODE, (ledc_channel_t)s_ch_alloc[i], 0);
+            ledc_manager_free_channel((ledc_channel_t)s_ch_alloc[i]);
+            s_ch_alloc[i] = -1;
+        }
+    }
+    if (s_timer_alloc >= 0) {
+        ledc_manager_free_timer((ledc_timer_t)s_timer_alloc);
+        s_timer_alloc = -1;
+    }
+    channels_allocated = false;
+
     // Reset pins and release from bound list
     for (int i = 0; i < 4; i++) {
         if (bound_pins[i] >= 0) {
-            gpio_reset_pin(bound_pins[i]);
+            reset_pin_clean(bound_pins[i]);
             bound_pins[i] = -1;
         }
     }
-    if (ap_pin >= 0) gpio_reset_pin(ap_pin);
-    if (an_pin >= 0) gpio_reset_pin(an_pin);
-    if (bp_pin >= 0) gpio_reset_pin(bp_pin);
-    if (bn_pin >= 0) gpio_reset_pin(bn_pin);
+    reset_pin_clean(ap_pin);
+    reset_pin_clean(an_pin);
+    reset_pin_clean(bp_pin);
+    reset_pin_clean(bn_pin);
 
     ESP_LOGI(TAG, "Bipolar Stepper deinitialized");
 }
 
 void Stepper_Init(void) {
-    // Cleanly deactivate unipolar stepper if it was running on the shared pins
+    // Cleanly deactivate unipolar stepper and general-purpose PWM channels to prevent pin/LEDC exhaustion
     UnipolarStep_Deinit();
+    pwm_driver_deinit_all();
 
     if (!channels_allocated) {
         if (!ledc_manager_alloc_timer(pwm_freq, &stepper_timer_num)) {
@@ -272,12 +299,17 @@ void Stepper_Init(void) {
             mesh_zigbee_send_text("ERR: NO FREE TIMERS");
             return;
         }
+        s_timer_alloc = (int)stepper_timer_num;
 
-        if (!ledc_manager_alloc_channel(&ap_channel_num) || !ledc_manager_alloc_channel(&an_channel_num) ||
-            !ledc_manager_alloc_channel(&bp_channel_num) || !ledc_manager_alloc_channel(&bn_channel_num)) {
-            ESP_LOGE(TAG, "Stepper Init Failed: No free channels");
-            mesh_zigbee_send_text("ERR: NO FREE CHANNELS");
-            return;
+        ledc_channel_t *ch_ptrs[4] = { &ap_channel_num, &an_channel_num, &bp_channel_num, &bn_channel_num };
+        for (int i = 0; i < 4; i++) {
+            if (!ledc_manager_alloc_channel(ch_ptrs[i])) {
+                ESP_LOGE(TAG, "Stepper Init Failed: No free channels");
+                Stepper_Deinit();
+                mesh_zigbee_send_text("ERR: NO FREE CHANNELS");
+                return;
+            }
+            s_ch_alloc[i] = (int)(*ch_ptrs[i]);
         }
         channels_allocated = true;
     }

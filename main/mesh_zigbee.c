@@ -2,11 +2,13 @@
  * mesh_zigbee.c - ESP-NOW Wireless Mesh Communications & Radio Engine
  *
  * Purpose:
- *   Provides the core wireless mesh transport layer over 2.4GHz ESP-NOW. Manages radio
- *   initialization (Wi-Fi Station mode, Long-Range PHY, custom frame headers), RF antenna
- *   switch hardware (GPIO 3 = PWR [0=ON], GPIO 14 = SEL [0=Ceramic, 1=External U.FL]),
- *   packet queuing (FreeRTOS RX/TX queues), Link Quality Indication (LQI), and coordinator
- *   connectivity heartbeat / severance tracking.
+ *   Provides the core wireless star transport layer over 2.4GHz ESP-NOW. Manages radio
+ *   initialization (Wi-Fi Station mode, 250 Kbps Long-Range PHY, custom 47-byte headers + 200-byte
+ *   text payloads), RF antenna switch hardware (GPIO 3 = PWR [0=ON], GPIO 14 = SEL [0=Ceramic, 1=U.FL]),
+ *   non-blocking packet queuing (FreeRTOS RX/TX queues with unicast-to-broadcast fallback),
+ *   Link Quality Indication (LQI), and coordinator connectivity tracking (declaring link severed
+ *   after MESH_COORDINATOR_MAX_CONSECUTIVE_FAILS = 4 failed unicast ACKs or
+ *   MESH_COORDINATOR_SILENCE_TIMEOUT_MS = 6000 ms of inbound silence).
  *
  * Supported Commands (Interactive Console / Workbench):
  *   rf <pwr> <sel>
