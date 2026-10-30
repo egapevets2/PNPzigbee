@@ -1,3 +1,11 @@
+/*
+ * unipolarStep.h - 5-Wire Unipolar Stepper Motor Driver Interface
+ *
+ * Purpose:
+ *   Declares API prototypes and command dispatchers for 5-wire unipolar reduction
+ *   steppers (Adafruit 28BYJ-48 with 5V center tap driven by MOSFETs), Arduino Stepper core
+ *   sequencing, trapezoidal acceleration/deceleration ramping, and automatic coil power-down.
+ */
 #ifndef UNIPOLAR_STEP_H
 #define UNIPOLAR_STEP_H
 

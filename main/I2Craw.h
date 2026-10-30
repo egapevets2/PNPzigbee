@@ -1,5 +1,9 @@
 /*
- * I2Craw.h
+ * I2Craw.h - Direct Low-Level I2C Register Access & Bus Scanner Interface
+ *
+ * Purpose:
+ *   Declares command dispatchers, latched-bus detectors, and raw read/write/scan
+ *   prototypes for direct low-level I2C communication on the shared I2C bus.
  */
 #ifndef I2CRAW_H
 #define I2CRAW_H

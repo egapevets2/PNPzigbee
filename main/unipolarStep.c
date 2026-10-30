@@ -7,7 +7,8 @@
  *   library 4-wire sequence, enhanced with FreeRTOS background queue execution, automatic
  *   Stepper_Deinit() mutual exclusion, automatic coil power-down on completion, and trapezoidal
  *   acceleration/deceleration profiling between starting delay (Delay0) and cruise delay (Delay1).
- *   All commands accept space-delimited or '=' assignment syntax.
+ *   Uses microsecond delay timing with periodic 250ms yields to the IDLE task to service the
+ *   FreeRTOS Task Watchdog (TWDT) during long moves. All commands accept space-delimited or '=' syntax.
  *
  * Supported Commands:
  *   SetupUnipolar
@@ -224,7 +225,14 @@ static void unipolar_worker_task(void *arg)
             ESP_LOGI(TAG, "Starting move: dir=%d, total=%d (accel=%d, cruise=%d, decel=%d), delay0=%.1fms, delay1=%.1fms",
                      move.dir, total_steps, a, n, a, d0, d1);
 
+            int64_t last_idle_yield = esp_timer_get_time();
             for (int k = 0; k < total_steps && !s_stop_requested; k++) {
+                // Periodically yield to lower-priority IDLE task to satisfy Task Watchdog (TWDT)
+                if ((esp_timer_get_time() - last_idle_yield) >= 250000) {
+                    vTaskDelay(1);
+                    last_idle_yield = esp_timer_get_time();
+                }
+
                 // Increment or decrement step number exactly like Arduino Stepper.cpp:
                 if (move.dir == 1) {
                     s_step_number++;

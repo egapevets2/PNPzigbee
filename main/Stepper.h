@@ -1,4 +1,11 @@
-// File: Stepper.h
+/*
+ * Stepper.h - 4-Wire Bipolar Stepper Motor Driver Subsystem Header
+ *
+ * Purpose:
+ *   Declares API prototypes and command dispatchers for 4-wire bipolar stepper motor
+ *   phase control, LEDC PWM duty current limiting, acceleration/deceleration profiling,
+ *   and full-step / half-step sequence modes.
+ */
 
 #ifndef STEPPER_H
 #define STEPPER_H

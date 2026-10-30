@@ -1,3 +1,13 @@
+/*
+ * discovery.h - Dynamic Node Discovery, Routing Table & Topology Management Interface
+ *
+ * Purpose:
+ *   Defines frame formats (espnow_frame_t), routing table structures (routing_entry_t),
+ *   discovery command constants, and API prototypes for node announcement, Coordinator
+ *   routing table maintenance (copy-out query and locked update functions), hardware
+ *   peer management, and endpoint coordinator loss watchdog timeouts.
+ */
+
 #ifndef DISCOVERY_H
 #define DISCOVERY_H
 
@@ -20,6 +30,9 @@ extern "C" {
 #define DISCOVERY_CMD_HELLO        "HELLO"
 #define DISCOVERY_CMD_HELLO_ACK    "HELLO_ACK"
 #define DISCOVERY_CMD_SWEEP        "DISCOVER_ALL"
+
+/** Watchdog: Maximum duration (ms) an endpoint will tolerate missing coordinator contact before rebooting */
+#define DISCOVERY_COORDINATOR_TIMEOUT_MS  (180 * 1000) // 3 minutes
 
 typedef struct __attribute__((packed)) {
     char    source[MESH_TEXT_LEN];
@@ -57,7 +70,7 @@ bool ensure_peer_exists(const uint8_t *mac);
 int16_t rssi_to_lqi(int8_t rssi);
 
 /* =========================================================================
-   Coordinator Dynamic Routing Table API
+   Coordinator Dynamic Routing Table API (Copy-Out / Mutex-Protected)
    ========================================================================= */
 
 /**
@@ -66,19 +79,33 @@ int16_t rssi_to_lqi(int8_t rssi);
 esp_err_t routing_table_init(void);
 
 /**
- * @brief Find an entry by case-insensitive node name.
+ * @brief Find an entry by case-insensitive node name and copy it out while holding the mutex.
+ * 
+ * @param name Node name to search.
+ * @param out_entry Buffer to receive the entry copy (optional, can be NULL if checking existence).
+ * @return true if entry was found, false otherwise.
  */
-routing_entry_t *routing_table_find_by_name(const char *name);
+bool routing_table_find_by_name(const char *name, routing_entry_t *out_entry);
 
 /**
- * @brief Find an entry by 6-byte MAC address.
+ * @brief Find an entry by 6-byte MAC address and copy it out while holding the mutex.
+ * 
+ * @param mac 6-byte MAC address.
+ * @param out_entry Buffer to receive the entry copy (optional, can be NULL).
+ * @return true if entry was found, false otherwise.
  */
-routing_entry_t *routing_table_find_by_mac(const uint8_t *mac);
+bool routing_table_find_by_mac(const uint8_t *mac, routing_entry_t *out_entry);
 
 /**
- * @brief Insert or update a node in the dynamic routing table.
+ * @brief Insert or update a node in the dynamic routing table, optionally copying it out.
+ * 
+ * @param name Node name.
+ * @param mac 6-byte MAC address.
+ * @param lqi Link Quality Indication.
+ * @param out_entry Buffer to receive the entry copy (optional, can be NULL).
+ * @return true on success, false on error.
  */
-routing_entry_t *routing_table_add_or_update(const char *name, const uint8_t *mac, int16_t lqi);
+bool routing_table_add_or_update(const char *name, const uint8_t *mac, int16_t lqi, routing_entry_t *out_entry);
 
 /**
  * @brief Get total number of registered nodes in the routing table.
@@ -86,12 +113,49 @@ routing_entry_t *routing_table_add_or_update(const char *name, const uint8_t *ma
 size_t routing_table_get_count(void);
 
 /**
- * @brief Get node entry by table index (0 .. count - 1).
+ * @brief Get node entry by table index (0 .. count - 1), copying it out while holding the mutex.
+ * 
+ * @param index 0-based index in the table.
+ * @param out_entry Buffer to receive the entry copy.
+ * @return true if index was valid and entry copied, false otherwise.
  */
-routing_entry_t *routing_table_get_by_index(size_t index);
+bool routing_table_get_by_index(size_t index, routing_entry_t *out_entry);
 
 /**
- * @brief Clear all entries in the routing table.
+ * @brief Atomically update an entry's online status, last seen tick, and LQI upon RX.
+ * 
+ * @param mac 6-byte sender MAC address.
+ * @param lqi Link Quality Indication.
+ * @param out_entry Optional buffer to copy the updated entry into.
+ * @return true if entry was found and updated, false otherwise.
+ */
+bool routing_table_update_rx(const uint8_t *mac, int16_t lqi, routing_entry_t *out_entry);
+
+/**
+ * @brief Atomically update an entry's remote LQI and mark fresh ping as seen upon PONG.
+ * 
+ * @param mac 6-byte sender MAC address.
+ * @param remote_lqi Reported remote LQI from node.
+ * @return true if entry was found and updated, false otherwise.
+ */
+bool routing_table_update_pong(const uint8_t *mac, int16_t remote_lqi);
+
+/**
+ * @brief Prepare routing table for a fresh network report by setting fresh_ping_expected = true
+ *        and fresh_ping_seen = false across all current entries.
+ * 
+ * @return Number of expected nodes.
+ */
+int routing_table_prepare_fresh_report(void);
+
+/**
+ * @brief Finalize fresh network report: marks any entry that did not respond as offline,
+ *        and clears fresh_ping flags.
+ */
+void routing_table_finalize_fresh_report(void);
+
+/**
+ * @brief Clear all entries in the routing table and delete ESP-NOW peers.
  */
 void routing_table_clear(void);
 

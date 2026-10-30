@@ -8,7 +8,9 @@
  *   non-blocking packet queuing (FreeRTOS RX/TX queues with unicast-to-broadcast fallback),
  *   Link Quality Indication (LQI), and coordinator connectivity tracking (declaring link severed
  *   after MESH_COORDINATOR_MAX_CONSECUTIVE_FAILS = 4 failed unicast ACKs or
- *   MESH_COORDINATOR_SILENCE_TIMEOUT_MS = 6000 ms of inbound silence).
+ *   MESH_COORDINATOR_SILENCE_TIMEOUT_MS = 6000 ms of inbound silence). The transmit callback
+ *   evaluates frame destination MAC directly against the coordinator MAC, ensuring thread-safe,
+ *   race-free tracking across asynchronous Wi-Fi callbacks.
  *
  * Supported Commands (Interactive Console / Workbench):
  *   rf <pwr> <sel>
@@ -111,18 +113,12 @@ static bool s_joined = true;
 static volatile bool s_coordinator_connected = false;
 static volatile TickType_t s_last_coord_contact_tick = 0;
 static volatile int s_consecutive_send_fails = 0;
-static volatile bool s_last_tx_to_coordinator = false;
 
 void mesh_zigbee_record_coordinator_contact(void)
 {
     s_coordinator_connected = true;
     s_last_coord_contact_tick = xTaskGetTickCount();
     s_consecutive_send_fails = 0;
-}
-
-void mesh_zigbee_set_last_tx_to_coordinator(bool is_coord)
-{
-    s_last_tx_to_coordinator = is_coord;
 }
 
 TickType_t mesh_zigbee_get_last_coord_contact_tick(void)
@@ -243,13 +239,18 @@ static void espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *
 static void espnow_send_cb(const esp_now_send_info_t *tx_info, esp_now_send_status_t status)
 {
     ESP_LOGD(TAG, "ESP-NOW TX cb: status=%d (%s)", status, status == ESP_NOW_SEND_SUCCESS ? "SUCCESS" : "FAIL");
+
+    bool is_to_coordinator = false;
+    if (tx_info && tx_info->des_addr && s_coordinator_known) {
+        is_to_coordinator = (memcmp(tx_info->des_addr, s_coordinator_mac, ESP_NOW_ETH_ALEN) == 0);
+    }
+
     if (status == ESP_NOW_SEND_SUCCESS) {
-        s_consecutive_send_fails = 0;
-        if (s_last_tx_to_coordinator) {
+        if (is_to_coordinator) {
             mesh_zigbee_record_coordinator_contact();
         }
     } else {
-        if (s_last_tx_to_coordinator) {
+        if (is_to_coordinator) {
             s_consecutive_send_fails++;
             if (s_consecutive_send_fails >= MESH_COORDINATOR_MAX_CONSECUTIVE_FAILS) {
                 s_coordinator_connected = false;
@@ -278,8 +279,6 @@ static void mesh_tx_task(void *arg)
             const uint8_t *dest_mac = (strcasecmp(frame.target, "broadcast") == 0) ? s_broadcast_mac :
                                       (s_coordinator_known ? s_coordinator_mac : s_broadcast_mac);
             ensure_peer_exists(dest_mac);
-
-            s_last_tx_to_coordinator = (s_coordinator_known && memcmp(dest_mac, s_coordinator_mac, ESP_NOW_ETH_ALEN) == 0);
 
             ESP_LOGI(TAG, "TX task: sending to %02x:%02x:%02x:%02x:%02x:%02x text='%s'",
                      dest_mac[0], dest_mac[1], dest_mac[2], dest_mac[3], dest_mac[4], dest_mac[5],

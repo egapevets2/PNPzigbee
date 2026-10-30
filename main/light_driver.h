@@ -1,5 +1,9 @@
-// File: light_driver.h
-// ... (keep standard includes and copyright header) ...
+/*
+ * light_driver.h - Onboard Status LED Driver Header
+ *
+ * Purpose:
+ *   Controls the Seeed Studio XIAO ESP32-C6 onboard yellow user LED on GPIO 15 (active-low).
+ */
 
 #pragma once
 

@@ -8,11 +8,15 @@
  *     (500, 1000, 2000, 5000, 10000 ms) until acknowledged by the coordinator with HELLO_ACK
  *     (persisting the learned Coordinator MAC in NVS). Once registered, a 500ms background
  *     heartbeat monitor probes the Coordinator with a unicast HELLO whenever inbound traffic
- *      has been silent for >= 1000ms.
+ *     has been silent for >= 1000ms. If no Coordinator contact occurs for >= 3 minutes
+ *     (DISCOVERY_COORDINATOR_TIMEOUT_MS = 180000), disc_node_task automatically triggers an
+ *     emergency restart (esp_restart) to heal network partitions or recovery stalls.
  *   - Coordinator: Dynamically registers up to ROUTING_TABLE_MAX_NODES (25) nodes into a mutex-
  *     protected routing table mapping logical names to 6-byte MAC addresses, 16-bit short addresses,
- *     bidirectional RSSI/LQI metrics, and last-seen timestamps, with LRU peer eviction in the
- *     ESP-NOW hardware peer table when active nodes exceed peer table capacity.
+ *     bidirectional RSSI/LQI metrics, and last-seen timestamps, with copy-out access APIs and locked
+ *     update functions preventing raw routing-table pointers from escaping the synchronization mutex,
+ *     and LRU peer eviction in the ESP-NOW hardware peer table (preserving the broadcast MAC) when
+ *     active nodes exceed peer capacity.
  *
  * Supported Commands (Network Protocol & Control Frames):
  *   HELLO
@@ -94,6 +98,7 @@ bool ensure_peer_exists(const uint8_t *mac)
             TickType_t oldest_tick = UINT32_MAX;
             for (size_t i = 0; i < s_table_count; i++) {
                 if (memcmp(s_table[i].mac, mac, ESP_NOW_ETH_ALEN) != 0 &&
+                    memcmp(s_table[i].mac, s_broadcast_mac, ESP_NOW_ETH_ALEN) != 0 &&
                     esp_now_is_peer_exist(s_table[i].mac)) {
                     if (!found_victim || s_table[i].last_seen_tick < oldest_tick) {
                         oldest_tick = s_table[i].last_seen_tick;
@@ -107,9 +112,15 @@ bool ensure_peer_exists(const uint8_t *mac)
 
         if (!found_victim) {
             esp_now_peer_info_t victim = {0};
-            if (esp_now_fetch_peer(true, &victim) == ESP_OK) {
-                memcpy(evict_mac, victim.peer_addr, ESP_NOW_ETH_ALEN);
-                found_victim = true;
+            bool restart = true;
+            while (esp_now_fetch_peer(restart, &victim) == ESP_OK) {
+                restart = false;
+                if (memcmp(victim.peer_addr, s_broadcast_mac, ESP_NOW_ETH_ALEN) != 0 &&
+                    memcmp(victim.peer_addr, mac, ESP_NOW_ETH_ALEN) != 0) {
+                    memcpy(evict_mac, victim.peer_addr, ESP_NOW_ETH_ALEN);
+                    found_victim = true;
+                    break;
+                }
             }
         }
 
@@ -163,39 +174,45 @@ esp_err_t routing_table_init(void)
     return ESP_OK;
 }
 
-routing_entry_t *routing_table_find_by_name(const char *name)
+bool routing_table_find_by_name(const char *name, routing_entry_t *out_entry)
 {
-    if (!name || !s_table_mutex) return NULL;
+    if (!name || !s_table_mutex) return false;
 
     xSemaphoreTake(s_table_mutex, portMAX_DELAY);
     for (size_t i = 0; i < s_table_count; i++) {
         if (strcasecmp(s_table[i].name, name) == 0) {
+            if (out_entry) {
+                *out_entry = s_table[i];
+            }
             xSemaphoreGive(s_table_mutex);
-            return &s_table[i];
+            return true;
         }
     }
     xSemaphoreGive(s_table_mutex);
-    return NULL;
+    return false;
 }
 
-routing_entry_t *routing_table_find_by_mac(const uint8_t *mac)
+bool routing_table_find_by_mac(const uint8_t *mac, routing_entry_t *out_entry)
 {
-    if (!mac || !s_table_mutex) return NULL;
+    if (!mac || !s_table_mutex) return false;
 
     xSemaphoreTake(s_table_mutex, portMAX_DELAY);
     for (size_t i = 0; i < s_table_count; i++) {
         if (memcmp(s_table[i].mac, mac, ESP_NOW_ETH_ALEN) == 0) {
+            if (out_entry) {
+                *out_entry = s_table[i];
+            }
             xSemaphoreGive(s_table_mutex);
-            return &s_table[i];
+            return true;
         }
     }
     xSemaphoreGive(s_table_mutex);
-    return NULL;
+    return false;
 }
 
-routing_entry_t *routing_table_add_or_update(const char *name, const uint8_t *mac, int16_t lqi)
+bool routing_table_add_or_update(const char *name, const uint8_t *mac, int16_t lqi, routing_entry_t *out_entry)
 {
-    if (!name || !mac || !s_table_mutex) return NULL;
+    if (!name || !mac || !s_table_mutex) return false;
 
     xSemaphoreTake(s_table_mutex, portMAX_DELAY);
 
@@ -262,10 +279,14 @@ routing_entry_t *routing_table_add_or_update(const char *name, const uint8_t *ma
                  entry->name, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], entry->short_addr, lqi);
     }
 
+    if (out_entry) {
+        *out_entry = *entry;
+    }
+
     xSemaphoreGive(s_table_mutex);
 
     ensure_peer_exists(mac);
-    return entry;
+    return true;
 }
 
 size_t routing_table_get_count(void)
@@ -279,17 +300,89 @@ size_t routing_table_get_count(void)
     return count;
 }
 
-routing_entry_t *routing_table_get_by_index(size_t index)
+bool routing_table_get_by_index(size_t index, routing_entry_t *out_entry)
 {
-    routing_entry_t *entry = NULL;
-    if (s_table_mutex) {
-        xSemaphoreTake(s_table_mutex, portMAX_DELAY);
-        if (index < s_table_count) {
-            entry = &s_table[index];
-        }
+    if (!s_table_mutex || !out_entry) return false;
+
+    xSemaphoreTake(s_table_mutex, portMAX_DELAY);
+    if (index < s_table_count) {
+        *out_entry = s_table[index];
         xSemaphoreGive(s_table_mutex);
+        return true;
     }
-    return entry;
+    xSemaphoreGive(s_table_mutex);
+    return false;
+}
+
+bool routing_table_update_rx(const uint8_t *mac, int16_t lqi, routing_entry_t *out_entry)
+{
+    if (!mac || !s_table_mutex) return false;
+
+    xSemaphoreTake(s_table_mutex, portMAX_DELAY);
+    for (size_t i = 0; i < s_table_count; i++) {
+        if (memcmp(s_table[i].mac, mac, ESP_NOW_ETH_ALEN) == 0) {
+            s_table[i].online = true;
+            s_table[i].last_seen_tick = xTaskGetTickCount();
+            s_table[i].last_lqi = lqi;
+            if (out_entry) {
+                *out_entry = s_table[i];
+            }
+            xSemaphoreGive(s_table_mutex);
+            return true;
+        }
+    }
+    xSemaphoreGive(s_table_mutex);
+    return false;
+}
+
+bool routing_table_update_pong(const uint8_t *mac, int16_t remote_lqi)
+{
+    if (!mac || !s_table_mutex) return false;
+
+    xSemaphoreTake(s_table_mutex, portMAX_DELAY);
+    for (size_t i = 0; i < s_table_count; i++) {
+        if (memcmp(s_table[i].mac, mac, ESP_NOW_ETH_ALEN) == 0) {
+            s_table[i].remote_lqi = remote_lqi;
+            s_table[i].fresh_ping_seen = true;
+            xSemaphoreGive(s_table_mutex);
+            return true;
+        }
+    }
+    xSemaphoreGive(s_table_mutex);
+    return false;
+}
+
+int routing_table_prepare_fresh_report(void)
+{
+    if (!s_table_mutex) return 0;
+
+    int expected = 0;
+    xSemaphoreTake(s_table_mutex, portMAX_DELAY);
+    for (size_t i = 0; i < s_table_count; i++) {
+        s_table[i].fresh_ping_expected = true;
+        s_table[i].fresh_ping_seen = false;
+        expected++;
+    }
+    xSemaphoreGive(s_table_mutex);
+    return expected;
+}
+
+void routing_table_finalize_fresh_report(void)
+{
+    if (!s_table_mutex) return;
+
+    xSemaphoreTake(s_table_mutex, portMAX_DELAY);
+    for (size_t i = 0; i < s_table_count; i++) {
+        if (s_table[i].fresh_ping_expected && !s_table[i].fresh_ping_seen) {
+            s_table[i].online = false;
+            s_table[i].last_lqi = 0;
+            s_table[i].remote_lqi = -1;
+            ESP_LOGW(TAG, "Fresh report: no PONG from %s, marking offline", s_table[i].name);
+        }
+        s_table[i].fresh_ping_expected = false;
+        s_table[i].fresh_ping_seen = false;
+    }
+    xSemaphoreGive(s_table_mutex);
 }
 
 void routing_table_clear(void)
@@ -347,7 +440,7 @@ bool discovery_coord_handle_rx(const uint8_t *src_mac, const espnow_frame_t *fra
         strcmp(frame->text, DISCOVERY_CMD_HELLO) == 0 ||
         strncmp(frame->text, "HELLO", 5) == 0) {
 
-        routing_table_add_or_update(frame->source, src_mac, lqi);
+        routing_table_add_or_update(frame->source, src_mac, lqi, NULL);
 
         // Send unicast HELLO_ACK back to sender
         espnow_frame_t ack = {0};
@@ -367,7 +460,7 @@ bool discovery_coord_handle_rx(const uint8_t *src_mac, const espnow_frame_t *fra
     // For any other frame from a node, automatically learn / update its routing entry
     if (frame->source[0] != '\0' && strcasecmp(frame->source, "coordinator") != 0 &&
         strcasecmp(frame->source, "unknown") != 0) {
-        routing_table_add_or_update(frame->source, src_mac, lqi);
+        routing_table_add_or_update(frame->source, src_mac, lqi, NULL);
     }
 
     return false;
@@ -393,7 +486,6 @@ static void discovery_node_task(void *arg)
         strncpy(frame.text, DISCOVERY_CMD_HELLO, sizeof(frame.text) - 1);
 
         ensure_peer_exists(s_broadcast_mac);
-        mesh_zigbee_set_last_tx_to_coordinator(false);
         esp_now_send(s_broadcast_mac, (const uint8_t *)&frame, sizeof(frame));
         ESP_LOGI(TAG, "Dispatched Layer 1 HELLO broadcast (attempt %d, backoff %lums)",
                  (int)(i + 1), (unsigned long)backoff_delays_ms[i]);
@@ -407,7 +499,15 @@ static void discovery_node_task(void *arg)
 
         TickType_t now = xTaskGetTickCount();
         TickType_t last_contact = mesh_zigbee_get_last_coord_contact_tick();
-        TickType_t elapsed = (last_contact == 0) ? pdMS_TO_TICKS(10000) : (now - last_contact);
+        TickType_t elapsed = (last_contact == 0) ? now : (now - last_contact);
+
+        // 3-minute watchdog: reboot if no coordinator contact has occurred for >= 3 minutes
+        if (elapsed >= pdMS_TO_TICKS(DISCOVERY_COORDINATOR_TIMEOUT_MS)) {
+            ESP_LOGE(TAG, "Watchdog triggered: no coordinator contact for %lu s (>= %d s limit). Rebooting...",
+                     (unsigned long)(pdTICKS_TO_MS(elapsed) / 1000), (int)(DISCOVERY_COORDINATOR_TIMEOUT_MS / 1000));
+            vTaskDelay(pdMS_TO_TICKS(150));
+            esp_restart();
+        }
 
         if (elapsed >= pdMS_TO_TICKS(1000)) {
             espnow_frame_t frame = {0};
@@ -419,11 +519,9 @@ static void discovery_node_task(void *arg)
             uint8_t coord_mac[6] = {0};
             if (nvs_config_get_coord_mac(coord_mac) == ESP_OK && coord_mac[0] != 0xFF) {
                 ensure_peer_exists(coord_mac);
-                mesh_zigbee_set_last_tx_to_coordinator(true);
                 esp_now_send(coord_mac, (const uint8_t *)&frame, sizeof(frame));
             } else {
                 ensure_peer_exists(s_broadcast_mac);
-                mesh_zigbee_set_last_tx_to_coordinator(false);
                 esp_now_send(s_broadcast_mac, (const uint8_t *)&frame, sizeof(frame));
             }
             ESP_LOGD(TAG, "Dispatched background heartbeat HELLO");
@@ -470,7 +568,6 @@ bool discovery_node_handle_rx(const uint8_t *src_mac, const espnow_frame_t *fram
         strncpy(reply.cmd, DISCOVERY_CMD_HELLO, sizeof(reply.cmd) - 1);
         strncpy(reply.text, DISCOVERY_CMD_HELLO, sizeof(reply.text) - 1);
 
-        mesh_zigbee_set_last_tx_to_coordinator(true);
         esp_now_send(src_mac, (const uint8_t *)&reply, sizeof(reply));
         ESP_LOGI(TAG, "Replied to DISCOVER_ALL sweep with unicast HELLO");
         s_node_announced = true;

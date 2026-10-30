@@ -16,7 +16,7 @@ extern "C" {
 
 /**
  * @brief Initialize a PCF8574 8-bit I/O expander instance on the shared I2C bus.
- *        Supports up to EXPAND8_MAX_INSTANCES (2) concurrent chips at distinct I2C addresses.
+ *        Supports up to EXPAND8_MAX_INSTANCES (8) concurrent chips at distinct I2C addresses.
  *
  * @param i2c_addr 7-bit I2C slave address (e.g. 0x20-0x27 or 0x38-0x3F).
  *                 If 0 is passed, defaults to PCF8574_DEFAULT_ADDR (0x20 / 32).

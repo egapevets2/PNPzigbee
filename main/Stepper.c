@@ -7,7 +7,9 @@
  *   Automatically calls UnipolarStep_Deinit() on initialization to prevent pin/LEDC conflicts.
  *   Supports full-step (4-step) and half-step (8-step) sequences, programmable step timing (msPerStep),
  *   active duty cycle current limiting (StepPWMduty), holding current (HoldPWM), and trapezoidal
- *   acceleration/deceleration step ramping. Commands accept space-delimited or '=' syntax.
+ *   acceleration/deceleration step ramping. Uses microsecond delays (esp_rom_delay_us) for fast step
+ *   rates below the 10ms FreeRTOS tick quantum while periodically yielding to the IDLE task every 250ms
+ *   to satisfy Task Watchdog (TWDT) requirements during long moves. Commands accept space-delimited or '=' syntax.
  *
  * Supported Commands:
  *   SetupStepper
@@ -46,6 +48,7 @@
 #include "pwm_driver.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_rom_sys.h"
 #include "driver/ledc.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -187,7 +190,21 @@ static void stepper_task(void *arg) {
             steps_remaining--;
 
             apply_step(current_step_index, pwm_duty_percent);
-            vTaskDelay(pdMS_TO_TICKS(calculate_current_delay()));
+            int delay_ms = calculate_current_delay();
+            if (delay_ms >= 15) {
+                vTaskDelay(pdMS_TO_TICKS(delay_ms));
+            } else if (delay_ms > 0) {
+                esp_rom_delay_us((uint32_t)delay_ms * 1000);
+                // Periodically yield to lower-priority IDLE task to satisfy Task Watchdog (TWDT)
+                static TickType_t s_last_wdt_feed = 0;
+                TickType_t now = xTaskGetTickCount();
+                if ((now - s_last_wdt_feed) >= pdMS_TO_TICKS(250)) {
+                    vTaskDelay(1);
+                    s_last_wdt_feed = now;
+                }
+            } else {
+                taskYIELD();
+            }
 
         } else {
             // Idle state: Apply holding torque or freewheel

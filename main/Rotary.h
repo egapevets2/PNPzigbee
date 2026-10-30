@@ -24,6 +24,7 @@
  *   - SetRotarySW <pin>
  *   - SetRotaryInvert <0|1>
  *   - SetRotaryHalfStep <0|1>
+ *   - MonitorRotary <0|1> / StreamRotary <0|1>
  *   - GetRotary / ReadRotary
  *   - ResetRotaryPos [val]
  *   - StopRotary / DeinitRotary

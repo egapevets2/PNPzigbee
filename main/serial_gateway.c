@@ -64,9 +64,6 @@ static const char *TAG = "SERIAL_GATEWAY";
 typedef routing_entry_t DeviceEntry;
 #define DEVICE_COUNT (routing_table_get_count())
 
-#define find_device_by_name(name) routing_table_find_by_name(name)
-#define find_device_by_mac(mac)   routing_table_find_by_mac(mac)
-
 #define COORD_RX_QUEUE_LEN 32
 #define COORD_TX_QUEUE_LEN 32
 
@@ -179,32 +176,32 @@ static void print_network_report(void)
 
     size_t count = routing_table_get_count();
     for (size_t i = 0; i < count; i++) {
-        DeviceEntry *dev = routing_table_get_by_index(i);
-        if (!dev) continue;
+        routing_entry_t dev;
+        if (!routing_table_get_by_index(i, &dev)) continue;
         uint32_t age_sec = 0;
-        if (dev->last_seen_tick != 0) {
-            age_sec = (now - dev->last_seen_tick) / configTICK_RATE_HZ;
+        if (dev.last_seen_tick != 0) {
+            age_sec = (now - dev.last_seen_tick) / configTICK_RATE_HZ;
         }
 
-        const char *type = dev->online ? "END_DEVICE" : "UNKNOWN";
-        const char *route = device_route_string(dev);
-        const char *rf_status = device_rf_status_string(dev);
+        const char *type = dev.online ? "END_DEVICE" : "UNKNOWN";
+        const char *route = device_route_string(&dev);
+        const char *rf_status = device_rf_status_string(&dev);
 
         char remote_lqi_str[8];
-        if (dev->remote_lqi >= 0) {
-            snprintf(remote_lqi_str, sizeof(remote_lqi_str), "%d", dev->remote_lqi);
+        if (dev.remote_lqi >= 0) {
+            snprintf(remote_lqi_str, sizeof(remote_lqi_str), "%d", dev.remote_lqi);
         } else {
             snprintf(remote_lqi_str, sizeof(remote_lqi_str), "-");
         }
 
         mesh_serial_writef(
             "%s,0x%016llX,0x%04X,%d,%s,%d,%s,%s,%lu,%s\r\n",
-            dev->name,
-            (unsigned long long)dev->ieee,
-            dev->short_addr,
-            dev->online ? 1 : 0,
+            dev.name,
+            (unsigned long long)dev.ieee,
+            dev.short_addr,
+            dev.online ? 1 : 0,
             type,
-            dev->last_lqi,
+            dev.last_lqi,
             remote_lqi_str,
             rf_status,
             (unsigned long)age_sec,
@@ -228,19 +225,19 @@ static void ping_network(void)
     mesh_serial_write("PING_NETWORK_BEGIN\r\n");
     size_t count = routing_table_get_count();
     for (size_t i = 0; i < count; i++) {
-        DeviceEntry *dev = routing_table_get_by_index(i);
-        if (!dev || dev->mac[0] == 0) continue;
+        routing_entry_t dev;
+        if (!routing_table_get_by_index(i, &dev) || dev.mac[0] == 0) continue;
 
         mesh_msg_t msg = {0};
-        strncpy(msg.target, dev->name, sizeof(msg.target) - 1);
+        strncpy(msg.target, dev.name, sizeof(msg.target) - 1);
         strncpy(msg.text, "PING", sizeof(msg.text) - 1);
 
         if (coord_enqueue_outgoing(msg)) {
-            mesh_serial_writef("PING %s SENT SHORT=0x%04X\r\n", dev->name, dev->short_addr);
-            ESP_LOGI(TAG, "PingNetwork: queued PING to %s", dev->name);
+            mesh_serial_writef("PING %s SENT SHORT=0x%04X\r\n", dev.name, dev.short_addr);
+            ESP_LOGI(TAG, "PingNetwork: queued PING to %s", dev.name);
         } else {
-            mesh_serial_writef("PING %s ERROR=TX_QUEUE_FULL\r\n", dev->name);
-            ESP_LOGW(TAG, "PingNetwork: TX queue full for %s", dev->name);
+            mesh_serial_writef("PING %s ERROR=TX_QUEUE_FULL\r\n", dev.name);
+            ESP_LOGW(TAG, "PingNetwork: TX queue full for %s", dev.name);
         }
     }
     mesh_serial_write("PING_NETWORK_END\r\n");
@@ -262,19 +259,7 @@ static void fresh_network_report_task(void *arg)
                        s_fresh_report_received,
                        s_fresh_report_expected);
 
-    size_t count = routing_table_get_count();
-    for (size_t i = 0; i < count; i++) {
-        DeviceEntry *dev = routing_table_get_by_index(i);
-        if (!dev) continue;
-        if (dev->fresh_ping_expected && !dev->fresh_ping_seen) {
-            dev->online = false;
-            dev->last_lqi = 0;
-            dev->remote_lqi = -1;
-            ESP_LOGW(TAG, "Fresh report: no PONG from %s, marking offline", dev->name);
-        }
-        dev->fresh_ping_expected = false;
-        dev->fresh_ping_seen = false;
-    }
+    routing_table_finalize_fresh_report();
 
     print_network_report();
     s_fresh_report_active = false;
@@ -293,17 +278,7 @@ static void start_fresh_network_report(void)
         vTaskDelay(pdMS_TO_TICKS(150));
     }
 
-    size_t count = routing_table_get_count();
-    int expected = 0;
-    for (size_t i = 0; i < count; i++) {
-        DeviceEntry *dev = routing_table_get_by_index(i);
-        if (!dev) continue;
-        dev->fresh_ping_expected = true;
-        dev->fresh_ping_seen = false;
-        expected++;
-    }
-
-    s_fresh_report_expected = expected;
+    s_fresh_report_expected = routing_table_prepare_fresh_report();
     s_fresh_report_received = 0;
     s_fresh_report_active = true;
 
@@ -354,20 +329,18 @@ static void coord_espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uin
         }
     }
 
-    DeviceEntry *dev = find_device_by_mac(recv_info->src_addr);
-    if (dev) {
-        dev->online = true;
-        dev->last_seen_tick = xTaskGetTickCount();
-        dev->last_lqi = lqi;
-        ESP_LOGI(TAG, "Device %s ONLINE (LQI=%d)", dev->name, lqi);
+    routing_entry_t dev = {0};
+    bool dev_found = routing_table_update_rx(recv_info->src_addr, lqi, &dev);
+    if (dev_found) {
+        ESP_LOGI(TAG, "Device %s ONLINE (LQI=%d)", dev.name, lqi);
     }
 
     mesh_msg_t rx = {0};
 
     if (len == sizeof(espnow_frame_t)) {
         const espnow_frame_t *frame = (const espnow_frame_t *)data;
-        if (dev) {
-            strncpy(rx.source, dev->name, sizeof(rx.source) - 1);
+        if (dev_found) {
+            strncpy(rx.source, dev.name, sizeof(rx.source) - 1);
         } else if (frame->source[0] != '\0') {
             strncpy(rx.source, frame->source, sizeof(rx.source) - 1);
         } else {
@@ -384,8 +357,8 @@ static void coord_espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uin
         size_t copy_len = (size_t)len < (sizeof(rx.text) - 1) ? (size_t)len : (sizeof(rx.text) - 1);
         memcpy(rx.text, data, copy_len);
         rx.text[copy_len] = '\0';
-        if (dev) {
-            strncpy(rx.source, dev->name, sizeof(rx.source) - 1);
+        if (dev_found) {
+            strncpy(rx.source, dev.name, sizeof(rx.source) - 1);
         } else {
             strncpy(rx.source, "unknown", sizeof(rx.source) - 1);
         }
@@ -394,14 +367,13 @@ static void coord_espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uin
 
     rx.lqi = lqi;
 
-    if (strncmp(rx.text, "PONG", 4) == 0 && dev) {
+    if (strncmp(rx.text, "PONG", 4) == 0 && dev_found) {
         int remote_lqi = -1;
         char *p = strstr(rx.text, "LQI=");
         if (p) {
             remote_lqi = atoi(p + 4);
         }
-        dev->remote_lqi = remote_lqi;
-        dev->fresh_ping_seen = true;
+        routing_table_update_pong(recv_info->src_addr, remote_lqi);
     }
 
     if (s_coord_rx_queue) {
@@ -577,8 +549,9 @@ static void coord_mesh_tx_task(void *arg)
         if (xQueueReceive(s_coord_tx_queue, &msg, portMAX_DELAY) == pdTRUE) {
             if (msg.target[0] == '\0') continue;
 
-            DeviceEntry *dev = find_device_by_name(msg.target);
-            const uint8_t *dest_mac = dev ? dev->mac : s_broadcast_mac;
+            routing_entry_t dev = {0};
+            bool dev_found = routing_table_find_by_name(msg.target, &dev);
+            const uint8_t *dest_mac = dev_found ? dev.mac : s_broadcast_mac;
             ensure_peer_exists(dest_mac);
 
             espnow_frame_t frame = {0};

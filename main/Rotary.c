@@ -21,7 +21,7 @@
  *   SetRotarySW <pin>               - Configures SW pushbutton pin ("GOT ROTARYSW OK")
  *   SetRotaryInvert <0|1>           - Inverts CW/CCW direction in software ("GOT ROTARYINVERT OK")
  *   SetRotaryHalfStep <0|1>         - 1 = half-step (default, 00 and 11 detents), 0 = full-step (11 detent)
- *   MonitorRotary <0|1>             - Starts/stops 2ms raw bit monitor ("RotaryBits ...", alias: StreamRotary)
+ *   MonitorRotary <0|1>             - Starts/stops 10ms raw bit monitor ("RotaryBits ...", alias: StreamRotary)
  *   GetRotary / ReadRotary          - Replies "ROTARY CLK=<c> DT=<d> SW=<s> POS=<pos> SW_LVL=<0|1>"
  *   ResetRotaryPos [val]            - Resets cumulative position count (default 0, "GOT RESETROTARYPOS OK")
  *   StopRotary / DeinitRotary       - Stops encoder and releases GPIOs ("STOP ROTARY OK")
@@ -484,7 +484,7 @@ static void rotary_raw_task(void *arg)
                 SendTheMessage(msg);
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(2));
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
     ESP_LOGI(TAG, "Rotary raw bit monitor task stopped");

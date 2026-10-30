@@ -1,3 +1,11 @@
+/*
+ * mesh_zigbee.h - ESP-NOW Star Network Radio & Message Interface
+ *
+ * Purpose:
+ *   Declares message structures (mesh_msg_t), RF parameters, radio initialization functions,
+ *   non-blocking message transmit/receive queues, and Coordinator connection health metrics.
+ */
+
 #pragma once
 
 #include <stdbool.h>
@@ -45,7 +53,6 @@ bool mesh_zigbee_receive(mesh_msg_t *msg, TickType_t timeout);
 bool mesh_zigbee_is_joined(void);
 bool mesh_zigbee_is_coordinator_connected(void);
 void mesh_zigbee_record_coordinator_contact(void);
-void mesh_zigbee_set_last_tx_to_coordinator(bool is_coord);
 TickType_t mesh_zigbee_get_last_coord_contact_tick(void);
 int16_t mesh_zigbee_last_lqi(void);
 void mesh_zigbee_set_rf_antenna(bool external);
